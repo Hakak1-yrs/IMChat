@@ -73,6 +73,21 @@ void ChatClient::markRead(const std::string& peer, int seq) {
     loop_->runInLoop([this, peer, seq] { sendPacket(MessageType::READ_REQ, json{ { "peer", peer }, { "seq", seq } }); });
 }
 
+void ChatClient::call(const std::string& op, json args, CallDone done) {
+    loop_->runInLoop([this, op, args = std::move(args), done = std::move(done)]() mutable {
+        if (state_ != State::LOGGED_IN) {
+            if (done) done(false, json(), "未连接服务器");
+            return;
+        }
+        const int reqId = sendPacket(MessageType::CALL_REQ, json{ { "op", op }, { "args", std::move(args) } });
+        if (reqId == 0) {
+            if (done) done(false, json(), "未连接服务器");
+            return;
+        }
+        calls_[reqId] = std::move(done);
+    });
+}
+
 void ChatClient::markGroupRead(int groupNo, int seq) {
     loop_->runInLoop(
         [this, groupNo, seq] { sendPacket(MessageType::READ_REQ, json{ { "groupNo", groupNo }, { "seq", seq } }); });
@@ -112,8 +127,17 @@ void ChatClient::onConnected(const std::shared_ptr<TcpConnection>&) {
 }
 
 void ChatClient::onDisconnected() {
-    // 发出去还没收到回执的消息仍在 pending_ 里，重新登录后会重发
+    // 发出去还没收到回执的消息仍在 pending_ 里，重新登录后会重发；通用请求不重发，直接告诉调用者失败了
+    failPendingCalls("连接已断开");
     setState(credentials_ ? State::CONNECTING : State::DISCONNECTED);
+}
+
+void ChatClient::failPendingCalls(const std::string& reason) {
+    std::unordered_map<int, CallDone> calls;
+    calls.swap(calls_);
+    for (auto& entry : calls) {
+        if (entry.second) entry.second(false, json(), reason);
+    }
 }
 
 void ChatClient::onBytes(const std::shared_ptr<TcpConnection>& connection, Buffer& buffer) {
@@ -147,6 +171,18 @@ void ChatClient::handle(const Packet& packet) {
         client_->disconnect();
         setState(State::DISCONNECTED);
         if (callbacks_.onKicked) callbacks_.onKicked(packet.body.value("reason", ""));
+        return;
+    case MessageType::CALL_RESP: {
+        auto it = calls_.find(packet.body.value("reqId", 0));
+        if (it == calls_.end()) return;
+        CallDone done = std::move(it->second);
+        calls_.erase(it);
+        if (done) done(packet.body.value("ok", false), packet.body.value("data", json()), packet.body.value("error", ""));
+        return;
+    }
+    case MessageType::PRESENCE:
+    case MessageType::MSG_REVOKED:
+        if (callbacks_.onPush) callbacks_.onPush(packet.type, packet.body);
         return;
     case MessageType::ERROR_RESP:
         if (callbacks_.onError) callbacks_.onError(packet.body);
@@ -188,15 +224,16 @@ void ChatClient::handleAck(const json& body) {
     if (callbacks_.onAck) callbacks_.onAck(body);
 }
 
-bool ChatClient::sendPacket(MessageType type, json body) {
+int ChatClient::sendPacket(MessageType type, json body) {
     std::shared_ptr<TcpConnection> connection = client_->connection();
-    if (!connection || !connection->connected()) return false;
-    body["reqId"] = nextReqId_++;
+    if (!connection || !connection->connected()) return 0;
+    const int reqId = nextReqId_++;
+    body["reqId"] = reqId;
     Packet packet;
     packet.type = type;
     packet.body = std::move(body);
     connection->send(packet.encode());
-    return true;
+    return reqId;
 }
 
 void ChatClient::sendLogin() {

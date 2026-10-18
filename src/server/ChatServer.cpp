@@ -2,6 +2,8 @@
 #include <cstdlib>
 #include <optional>
 #include <vector>
+#include "Group.h"
+#include "GroupPolicy.h"
 #include "Log.h"
 #include "Platform.h"
 #include "ServiceType.h"
@@ -29,24 +31,6 @@ long long number(const json& request, const char* key, long long fallback) {
     return it != request.end() && it->is_number_integer() ? it->get<long long>() : fallback;
 }
 
-// 一条消息的 JSON 表示（推送和同步共用）。私信带 to，群消息带 groupNo
-json messageJson(const Message& m) {
-    json body = { { "seq", m.seq() },
-                  { "service", ServiceTypeHelper::code(m.service()) },
-                  { "from", m.sender() },
-                  { "text", m.text() },
-                  { "time", m.time() } };
-    if (m.isGroup()) body["groupNo"] = std::atoi(m.target().c_str());
-    else body["to"] = m.target();
-    if (m.isSystem()) body["system"] = true;   // 群系统提示（如“A 邀请 B 加入了群聊”）
-    if (m.revoked()) {                         // 撤回的消息不再下发原文
-        body["revoked"] = true;
-        body["revokedBy"] = m.revokedBy();
-        body["text"] = "";
-    }
-    return body;
-}
-
 // 从末尾找 sender 发的最后一条消息：刚保存的那条（拿到它的序号和时间）
 std::optional<Message> lastFrom(const std::vector<Message>& history, const std::string& sender) {
     for (auto it = history.rbegin(); it != history.rend(); ++it) {
@@ -58,7 +42,9 @@ std::optional<Message> lastFrom(const std::vector<Message>& history, const std::
 }  // namespace
 
 ChatServer::ChatServer(EventLoop& loop, Platform& platform, Options options)
-    : loop_(loop), platform_(platform), options_(std::move(options)), server_(loop) {}
+    : loop_(loop), platform_(platform), options_(std::move(options)), server_(loop) {
+    registerApi();
+}
 
 ChatServer::~ChatServer() {
     if (idleTimer_ != 0) loop_.cancel(idleTimer_);
@@ -87,13 +73,19 @@ void ChatServer::onClose(const TcpConnection::Ptr& connection) {
     auto it = sessions_.find(connection->id());
     if (it == sessions_.end()) return;
     const Session& session = it->second;
+    const std::string accountKey = session.loggedIn ? session.accountKey : "";
+    bool wentOffline = false;
     if (session.loggedIn) {
         auto online = online_.find(session.accountKey);
         // 只有它仍是该账号的当前连接时才下线：被挤下线的旧连接关闭时，不能把新登录的连接也移除
-        if (online != online_.end() && online->second == connection->id()) online_.erase(online);
+        if (online != online_.end() && online->second == connection->id()) {
+            online_.erase(online);
+            wentOffline = true;
+        }
         Log::info(session.accountKey + " 下线");
     }
     sessions_.erase(it);
+    if (wentOffline) notifyPresence(accountKey, false);
 }
 
 void ChatServer::onMessage(const TcpConnection::Ptr& connection, Buffer& buffer) {
@@ -133,13 +125,15 @@ void ChatServer::dispatch(Session& session, const Packet& packet) {
     case MessageType::SEND_MSG_REQ:
     case MessageType::SYNC_REQ:
     case MessageType::READ_REQ:
+    case MessageType::CALL_REQ:
         if (!session.loggedIn) {
             sendError(session.connection, packet.body, ErrorCode::NOT_LOGGED_IN, "请先登录");
             return;
         }
         if (packet.type == MessageType::SEND_MSG_REQ) handleSendMessage(session, packet.body);
         else if (packet.type == MessageType::SYNC_REQ) handleSync(session, packet.body);
-        else handleRead(session, packet.body);
+        else if (packet.type == MessageType::READ_REQ) handleRead(session, packet.body);
+        else handleCall(session, packet.body);
         return;
     default:
         sendError(session.connection, packet.body, ErrorCode::UNKNOWN_TYPE,
@@ -179,10 +173,13 @@ void ChatServer::handleLogin(Session& session, const json& request) {
     platform_.unreadCount(*account, unreadPrivate, unreadGroup);
     response["ok"] = true;
     response["nickname"] = account->nickname();
+    response["location"] = account->location();
+    response["momentsName"] = account->momentsName();
     response["unreadPrivate"] = unreadPrivate;
     response["unreadGroup"] = unreadGroup;
     send(session.connection, MessageType::LOGIN_RESP, response);
     Log::info(key + " 从 " + session.connection->peer() + " 登录");
+    if (previousId == 0) notifyPresence(key, true);   // 换一处登录不算“上线”
 
     // 与微信相同：同一账号只能在一处登录，通知旧连接后断开它
     auto old = sessions_.find(previousId);
@@ -311,6 +308,160 @@ void ChatServer::pushTo(const std::string& accountKey, MessageType type, const j
     auto receiver = sessions_.find(online->second);
     if (receiver != sessions_.end()) send(receiver->second.connection, type, body);
 }
+
+// ======================== 通用请求（CALL_REQ） ========================
+
+void ChatServer::registerApi() {
+    api_["contacts.list"] = [this](Session&, ServiceBase& me, const json&) { return contactsList(me); };
+    api_["groups.list"] = [this](Session&, ServiceBase& me, const json&) { return groupsList(me); };
+    api_["reads.get"] = [this](Session&, ServiceBase& me, const json&) { return readsGet(me); };
+    api_["message.revoke"] = [this](Session&, ServiceBase& me, const json& args) { return revokeMessage(me, args); };
+}
+
+void ChatServer::handleCall(Session& session, const json& request) {
+    json response = reply(request);
+    const std::string op = field(request, "op");
+    auto handler = api_.find(op);
+    ServiceBase* me = accountOf(session);
+    if (handler == api_.end() || !me) {
+        response["ok"] = false;
+        response["error"] = "不支持的操作：" + op;
+    } else {
+        try {
+            const auto args = request.find("args");
+            response["data"] = handler->second(session, *me, args != request.end() && args->is_object() ? *args : json::object());
+            response["ok"] = true;
+        } catch (const ApiError& e) {
+            response["ok"] = false;
+            response["error"] = e.what();
+        }
+    }
+    send(session.connection, MessageType::CALL_RESP, response);
+}
+
+json ChatServer::contactsList(ServiceBase& me) {
+    const std::string service = ServiceTypeHelper::code(me.type());
+    json friends = json::array();
+    for (const Friend& f : me.friends().all()) {
+        ServiceBase* other = platform_.findAccount(me.type(), f.id());
+        json item = { { "id", f.id() },
+                      { "remark", f.remark() == "-" ? "" : f.remark() },
+                      { "online", isOnline(service + " " + f.id()) } };
+        if (other) {
+            item["nickname"] = other->nickname();
+            item["location"] = other->location();
+            item["birthday"] = other->birthday().toString();
+            item["tAge"] = other->tAge();
+            json mutual = json::array();
+            for (const std::string& id : platform_.mutualFriends(me, *other)) {
+                ServiceBase* m = platform_.findAccount(me.type(), id);
+                mutual.push_back({ { "id", id }, { "nickname", m ? m->nickname() : id } });
+            }
+            item["mutual"] = std::move(mutual);
+        }
+        friends.push_back(std::move(item));
+    }
+    return json{ { "friends", std::move(friends) } };
+}
+
+json ChatServer::groupsList(ServiceBase& me) {
+    json groups = json::array();
+    for (const Group* g : platform_.groups().groupsOf(me.type(), me.id())) {
+        const GroupPolicy& policy = g->policy();
+        json members = json::array();
+        json revocable = json::array();   // 我能撤回哪些成员的消息（由群当前的管理策略决定，客户端不必重复实现规则）
+        for (const std::string& id : g->members()) {
+            ServiceBase* account = platform_.findAccount(me.type(), id);
+            members.push_back({ { "id", id }, { "nickname", account ? account->nickname() : id } });
+            if (id != me.id() && policy.canRevoke(*g, me.id(), id)) revocable.push_back(id);
+        }
+        groups.push_back({ { "groupNo", g->groupNo() },
+                           { "name", g->name() },
+                           { "mode", GroupPolicy::modeCode(policy.mode()) },
+                           { "modeName", policy.modeName() },
+                           { "notice", g->notice() },
+                           { "owner", g->ownerId() },
+                           { "admins", policy.allowAdmin() ? g->admins() : std::vector<std::string>() },
+                           { "muted", policy.allowMute() ? g->muted() : std::vector<std::string>() },
+                           { "members", std::move(members) },
+                           { "canSpeak", g->canSpeak(me.id()) },
+                           { "canMentionAll", policy.canEditInfo(*g, me.id()) },
+                           { "revocable", std::move(revocable) } });
+    }
+    return json{ { "groups", std::move(groups) } };
+}
+
+json ChatServer::readsGet(ServiceBase& me) {
+    // 已读位置：我在每个会话里读到哪一条；私信的对方读到哪一条（用于显示“已读”）
+    MessageCenter& center = platform_.messages();
+    json mine = json::object(), peers = json::object(), groups = json::object();
+    for (const Friend& f : me.friends().all()) {
+        mine[f.id()] = center.readMark(me.type(), "P", f.id(), me.id());
+        peers[f.id()] = center.readMark(me.type(), "P", me.id(), f.id());
+    }
+    for (const Group* g : platform_.groups().groupsOf(me.type(), me.id()))
+        groups[std::to_string(g->groupNo())] = center.groupReadMark(me.type(), g->groupNo(), me.id());
+    return json{ { "private", std::move(mine) }, { "peerRead", std::move(peers) }, { "groups", std::move(groups) } };
+}
+
+json ChatServer::revokeMessage(ServiceBase& me, const json& args) {
+    const int seq = static_cast<int>(number(args, "seq", 0));
+    std::string error;
+    if (!platform_.revokeMessage(me, seq, error)) throw ApiError(error);
+    // 通知会话里其他在线的人：私信通知对方，群消息通知所有成员
+    Message message(0, me.type(), false, "", "", "", "");
+    platform_.messages().findMessage(me.type(), seq, message);
+    const std::string service = ServiceTypeHelper::code(me.type());
+    const json push = { { "seq", seq }, { "revokedBy", me.id() } };
+    std::vector<std::string> receivers;
+    if (!message.isGroup()) {
+        receivers.push_back(message.sender() == me.id() ? message.target() : message.sender());
+    } else if (const Group* g = platform_.groups().find(me.type(), std::atoi(message.target().c_str()))) {
+        receivers = g->members();
+    }
+    for (const std::string& id : receivers) {
+        if (id != me.id()) pushTo(service + " " + id, MessageType::MSG_REVOKED, push);
+    }
+    return json{ { "seq", seq }, { "revokedBy", me.id() } };
+}
+
+json ChatServer::messageJson(const Message& m) const {
+    json body = { { "seq", m.seq() },
+                  { "service", ServiceTypeHelper::code(m.service()) },
+                  { "from", m.sender() },
+                  { "text", m.text() },
+                  { "time", m.time() } };
+    if (m.isGroup()) {
+        body["groupNo"] = std::atoi(m.target().c_str());
+        // 这条消息 @ 了哪些成员（@昵称；能修改群资料的人发的 @所有人）
+        if (const Group* g = platform_.groups().find(m.service(), std::atoi(m.target().c_str()))) {
+            const std::vector<std::string> mentions = platform_.mentionsOf(*g, m);
+            if (!mentions.empty()) body["mentions"] = mentions;
+        }
+    } else {
+        body["to"] = m.target();
+    }
+    if (m.isSystem()) body["system"] = true;   // 群系统提示（如“A 邀请 B 加入了群聊”）
+    if (m.revoked()) {                         // 撤回的消息不再下发原文
+        body["revoked"] = true;
+        body["revokedBy"] = m.revokedBy();
+        body["text"] = "";
+    }
+    return body;
+}
+
+void ChatServer::notifyPresence(const std::string& accountKey, bool online) {
+    const std::size_t space = accountKey.find(' ');
+    ServiceType type = ServiceType::QQ;
+    if (space == std::string::npos || !ServiceTypeHelper::parse(accountKey.substr(0, space), type)) return;
+    const std::string id = accountKey.substr(space + 1);
+    ServiceBase* me = platform_.findAccount(type, id);
+    if (!me) return;
+    const json push = { { "account", id }, { "online", online } };
+    for (const Friend& f : me->friends().all()) pushTo(accountKey.substr(0, space) + " " + f.id(), MessageType::PRESENCE, push);
+}
+
+bool ChatServer::isOnline(const std::string& accountKey) const { return online_.count(accountKey) > 0; }
 
 ServiceBase* ChatServer::accountOf(const Session& session) const {
     const std::size_t space = session.accountKey.find(' ');

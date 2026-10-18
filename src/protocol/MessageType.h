@@ -17,6 +17,10 @@ enum class MessageType : std::uint16_t {
     READ_REQ = 400,       // {reqId, peer | groupNo, seq}：这个会话已读到 seq
     READ_RESP = 401,      // {reqId, ok}
     READ_RECEIPT = 402,   // 推送：私信的对方已读 {reader, seq}
+    CALL_REQ = 500,       // 通用请求 {reqId, op, args}：查询联系人、群资料、撤回消息……（op 列表见 docs/PROTOCOL.md）
+    CALL_RESP = 501,      // {reqId, ok, error | data}
+    PRESENCE = 510,       // 推送：好友上线 / 下线 {account, online}
+    MSG_REVOKED = 511,    // 推送：一条消息被撤回 {seq, revokedBy}
     ERROR_RESP = 900,     // {reqId?, code, message}
 };
 

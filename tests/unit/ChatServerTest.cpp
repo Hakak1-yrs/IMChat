@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <memory>
 #include <thread>
 #include "Log.h"
@@ -372,4 +373,157 @@ TEST_F(ChatServerTest, ReadReceiptReachesSenderAndClearsUnread) {
     li.reset();   // 重新登录：未读已经清零（已读位置是持久化的）
     TestClient again(port_);
     EXPECT_EQ(again.login("QQ", "10002")["unreadPrivate"], 0);
+}
+
+namespace {
+
+// 发一个通用请求，返回 CALL_RESP 的正文
+json call(TestClient& client, const std::string& op, const json& args = json::object()) {
+    client.send(MessageType::CALL_REQ, { { "reqId", 77 }, { "op", op }, { "args", args } });
+    std::optional<Packet> response = client.receive();
+    return response && response->type == MessageType::CALL_RESP ? response->body : json();
+}
+
+const json* findById(const json& list, const std::string& key, const json& value) {
+    for (const json& item : list)
+        if (item.value(key, json()) == value) return &item;
+    return nullptr;
+}
+
+}  // namespace
+
+TEST_F(ChatServerTest, PresenceIsPushedToOnlineFriends) {
+    startServer();
+    TestClient zhang(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    {
+        TestClient li(port_);
+        ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+        zhang.receive(300);   // 让上线通知到达
+        ASSERT_EQ(zhang.presences.size(), 1u);
+        EXPECT_EQ(zhang.presences[0]["account"], "10002");
+        EXPECT_EQ(zhang.presences[0]["online"], true);
+    }
+    zhang.receive(300);
+    ASSERT_EQ(zhang.presences.size(), 2u);   // 李四断开：下线通知
+    EXPECT_EQ(zhang.presences[1]["online"], false);
+}
+
+TEST_F(ChatServerTest, ContactsListHasRemarksOnlineStateAndMutualFriends) {
+    startServer();
+    TestClient li(port_), zhang(port_);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    json response = call(zhang, "contacts.list");
+    ASSERT_EQ(response["ok"], true);
+    EXPECT_EQ(response["reqId"], 77);
+    const json& friends = response["data"]["friends"];
+    ASSERT_EQ(friends.size(), 4u);   // 10002 10003 10004 10005
+    const json* li4 = findById(friends, "id", "10002");
+    ASSERT_TRUE(li4);
+    EXPECT_EQ((*li4)["remark"], "李四");
+    EXPECT_EQ((*li4)["nickname"], "李小四");
+    EXPECT_EQ((*li4)["online"], true);
+    EXPECT_EQ((*li4)["location"], "上海");
+    ASSERT_EQ((*li4)["mutual"].size(), 1u);   // 张三和李四的共同好友：王五（10003）
+    EXPECT_EQ((*li4)["mutual"][0]["id"], "10003");
+    EXPECT_EQ((*findById(friends, "id", "10003"))["online"], false);
+}
+
+TEST_F(ChatServerTest, GroupsListComesWithPermissionsComputedByPolicy) {
+    startServer();
+    TestClient li(port_), wang(port_);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);    // 群 1001 的管理员
+    ASSERT_EQ(wang.login("QQ", "10003")["ok"], true);  // 群 1001 的普通成员
+    json liGroups = call(li, "groups.list");
+    ASSERT_EQ(liGroups["ok"], true);
+    const json* g1001 = findById(liGroups["data"]["groups"], "groupNo", 1001);
+    ASSERT_TRUE(g1001);
+    EXPECT_EQ((*g1001)["name"], "编程交流群");
+    EXPECT_EQ((*g1001)["owner"], "10001");
+    EXPECT_EQ((*g1001)["mode"], "QQ");
+    EXPECT_EQ((*g1001)["members"].size(), 4u);
+    EXPECT_EQ((*g1001)["canSpeak"], true);
+    EXPECT_EQ((*g1001)["canMentionAll"], true);   // QQ 群模式下管理员也可以 @所有人
+    // 管理员能撤回普通成员的消息，不能撤回群主的
+    const json& revocable = (*g1001)["revocable"];
+    EXPECT_NE(std::find(revocable.begin(), revocable.end(), "10003"), revocable.end());
+    EXPECT_EQ(std::find(revocable.begin(), revocable.end(), "10001"), revocable.end());
+
+    const json wangGroups = call(wang, "groups.list");
+    const json* wang1001 = findById(wangGroups["data"]["groups"], "groupNo", 1001);
+    ASSERT_TRUE(wang1001);
+    EXPECT_EQ((*wang1001)["canMentionAll"], false);
+    EXPECT_TRUE((*wang1001)["revocable"].empty());
+}
+
+TEST_F(ChatServerTest, ReadsGetReturnsBothSidesOfPrivateChats) {
+    startServer();
+    TestClient zhang(port_), li(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    zhang.send(MessageType::SEND_MSG_REQ, sendRequest("m1", "10002", "读到这里"));
+    const int seq = zhang.receive()->body["seq"].get<int>();
+    ASSERT_TRUE(li.receive());
+    li.send(MessageType::READ_REQ, { { "peer", "10001" }, { "seq", seq } });
+    ASSERT_TRUE(li.receive());   // READ_RESP
+    ASSERT_TRUE(zhang.receive());   // READ_RECEIPT
+    json reads = call(zhang, "reads.get");
+    ASSERT_EQ(reads["ok"], true);
+    EXPECT_EQ(reads["data"]["peerRead"]["10002"], seq);     // 李四读到了我的这条
+    EXPECT_EQ(reads["data"]["private"]["10002"], 0);        // 我还没读过李四发来的
+    EXPECT_TRUE(reads["data"]["groups"].contains("1001"));
+}
+
+TEST_F(ChatServerTest, RevokeNotifiesParticipantsAndRespectsPermissions) {
+    startServer();
+    TestClient zhang(port_), li(port_), wang(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    ASSERT_EQ(wang.login("QQ", "10003")["ok"], true);
+    zhang.send(MessageType::SEND_MSG_REQ, groupRequest("g1", 1001, "这句说错了"));
+    const int seq = zhang.receive()->body["seq"].get<int>();
+    ASSERT_TRUE(li.receive());
+    ASSERT_TRUE(wang.receive());
+
+    json denied = call(wang, "message.revoke", { { "seq", seq } });   // 普通成员不能撤回群主的消息
+    EXPECT_EQ(denied["ok"], false);
+    EXPECT_FALSE(denied["error"].get<std::string>().empty());
+
+    json done = call(zhang, "message.revoke", { { "seq", seq } });
+    ASSERT_EQ(done["ok"], true);
+    for (TestClient* member : { &li, &wang }) {
+        std::optional<Packet> push = member->receive();
+        ASSERT_TRUE(push);
+        EXPECT_EQ(push->type, MessageType::MSG_REVOKED);
+        EXPECT_EQ(push->body["seq"], seq);
+        EXPECT_EQ(push->body["revokedBy"], "10001");
+    }
+    li.send(MessageType::SYNC_REQ, { { "afterSeq", seq - 1 } });   // 同步到的也是撤回状态，不含原文
+    const json synced = li.receive()->body["messages"][0];
+    EXPECT_EQ(synced["revoked"], true);
+    EXPECT_EQ(synced["text"], "");
+}
+
+TEST_F(ChatServerTest, GroupMessagesCarryMentions) {
+    startServer();
+    TestClient zhang(port_), li(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    zhang.send(MessageType::SEND_MSG_REQ, groupRequest("g1", 1001, "@李小四 看一下这个"));
+    ASSERT_TRUE(zhang.receive());
+    std::optional<Packet> push = li.receive();
+    ASSERT_TRUE(push);
+    EXPECT_EQ(push->body["mentions"], json::array({ "10002" }));
+    zhang.send(MessageType::SEND_MSG_REQ, groupRequest("g2", 1001, "@所有人 开会"));   // 群主发的 @所有人
+    ASSERT_TRUE(zhang.receive());
+    EXPECT_EQ(li.receive()->body["mentions"].size(), 3u);   // 除群主外的三位成员
+}
+
+TEST_F(ChatServerTest, UnknownCallOperationIsRejected) {
+    startServer();
+    TestClient zhang(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    json response = call(zhang, "no.such.op");
+    EXPECT_EQ(response["ok"], false);
 }

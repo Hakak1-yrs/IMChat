@@ -40,7 +40,10 @@ public:
         std::function<void(const nlohmann::json& receipt)> onReadReceipt;
         std::function<void(const std::string& reason)> onKicked;        // 账号在别处登录，不再自动重连
         std::function<void(const nlohmann::json& error)> onError;
+        std::function<void(MessageType type, const nlohmann::json& body)> onPush;   // 其他推送：好友上下线、消息被撤回……
     };
+    // 通用请求的结果：ok 为 false 时 error 是原因（包括“连接已断开”）
+    using CallDone = std::function<void(bool ok, const nlohmann::json& data, const std::string& error)>;
 
     struct Options {
         std::chrono::milliseconds heartbeat{ 15000 };   // 心跳间隔；3 倍时间内没有收到任何数据就重连
@@ -63,6 +66,8 @@ public:
     std::string sendGroupText(int groupNo, const std::string& text);
     void markRead(const std::string& peer, int seq);
     void markGroupRead(int groupNo, int seq);
+    // 通用请求（CALL_REQ），done 在网络线程里调用。未登录或连接断开时立即以失败结束
+    void call(const std::string& op, nlohmann::json args, CallDone done);
 
     State state() const;
     std::size_t pendingCount() const;   // 等待回执的消息数
@@ -83,7 +88,8 @@ private:
     void handleSyncResponse(const nlohmann::json& body);
     void handleAck(const nlohmann::json& body);
 
-    bool sendPacket(MessageType type, nlohmann::json body);   // 未连接时返回 false
+    int sendPacket(MessageType type, nlohmann::json body);   // 返回本次请求的 reqId；未连接时返回 0
+    void failPendingCalls(const std::string& reason);
     void sendLogin();
     void requestSync(int afterSeq);
     void flushPending();
@@ -108,6 +114,7 @@ private:
     std::deque<std::string> pendingOrder_;                      // 待确认消息的发送顺序
     std::unordered_map<std::string, nlohmann::json> pending_;   // clientMsgId → 请求
     std::unordered_set<int> delivered_;                         // 已经通知过的消息序号
+    std::unordered_map<int, CallDone> calls_;                   // reqId → 等待结果的通用请求
     int nextReqId_ = 1;
     std::uint64_t idCounter_ = 0;
     std::uint64_t idPrefix_ = 0;

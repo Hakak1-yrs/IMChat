@@ -2,11 +2,14 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include "Packet.h"
 #include "TcpServer.h"
 
+class Message;
 class Platform;
 class ServiceBase;
 
@@ -49,6 +52,18 @@ private:
     static constexpr int kSyncDefaultLimit = 200;   // 一次同步最多返回的消息条数（客户端可以要求更少）
     static constexpr int kSyncMaxLimit = 500;
 
+    // 通用请求（CALL_REQ）的处理函数：返回 data；业务上的失败抛出 ApiError，回给客户端 ok:false 和原因。
+    // 新增一种操作只需要在 registerApi 里登记一项，不必新增消息类型
+    using ApiHandler = std::function<nlohmann::json(Session& session, ServiceBase& me, const nlohmann::json& args)>;
+    struct ApiError : std::runtime_error {
+        using std::runtime_error::runtime_error;
+    };
+    void registerApi();
+    nlohmann::json contactsList(ServiceBase& me);
+    nlohmann::json groupsList(ServiceBase& me);
+    nlohmann::json readsGet(ServiceBase& me);
+    nlohmann::json revokeMessage(ServiceBase& me, const nlohmann::json& args);
+
     void onConnection(const TcpConnection::Ptr& connection);
     void onMessage(const TcpConnection::Ptr& connection, Buffer& buffer);
     void onClose(const TcpConnection::Ptr& connection);
@@ -58,7 +73,11 @@ private:
     void handleSendMessage(Session& session, const nlohmann::json& request);
     void handleSync(Session& session, const nlohmann::json& request);
     void handleRead(Session& session, const nlohmann::json& request);
+    void handleCall(Session& session, const nlohmann::json& request);
 
+    nlohmann::json messageJson(const Message& message) const;   // 推送和同步共用的消息格式
+    void notifyPresence(const std::string& accountKey, bool online);   // 通知在线的好友：我上线 / 下线了
+    bool isOnline(const std::string& accountKey) const;
     ServiceBase* accountOf(const Session& session) const;
     void pushTo(const std::string& accountKey, MessageType type, const nlohmann::json& body);   // 对方在线才发
     void send(const TcpConnection::Ptr& connection, MessageType type, nlohmann::json body);
@@ -74,4 +93,5 @@ private:
     std::unordered_map<std::uint64_t, Session> sessions_;              // 连接编号 → 会话
     std::unordered_map<std::string, std::uint64_t> online_;            // "QQ 10001" → 连接编号
     std::unordered_map<std::string, RecentMessages> recent_;           // "QQ 10001" → 最近的消息回执
+    std::unordered_map<std::string, ApiHandler> api_;                  // op → 处理函数
 };

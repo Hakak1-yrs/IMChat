@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 #include "Packet.h"
 #include "SocketOps.h"
 
@@ -16,7 +17,9 @@ public:
     bool connected() const;
     void sendRaw(const std::string& bytes);
     void send(MessageType type, const nlohmann::json& body = nlohmann::json::object());
-    std::optional<Packet> receive(int timeoutMs = 2000);   // 下一条消息；超时或连接关闭返回空
+    // 下一条消息；超时或连接关闭返回空。好友上下线的推送（PRESENCE）随时可能插进来，不计入，另存在 presences 里
+    std::optional<Packet> receive(int timeoutMs = 2000);
+    std::vector<nlohmann::json> presences;
     bool closedByPeer(int timeoutMs = 2000);                // 等到服务端关闭连接（期间收到的消息丢弃）
 
     // 便捷操作：登录并返回 LOGIN_RESP 的正文

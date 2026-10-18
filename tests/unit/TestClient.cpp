@@ -34,7 +34,12 @@ std::optional<Packet> TestClient::receive(int timeoutMs) {
         std::size_t consumed = 0;
         if (Frame::decode(buffer_.data(), buffer_.size(), frame, consumed) == Frame::DecodeResult::OK) {
             buffer_.erase(0, consumed);
-            return Packet::fromFrame(frame);
+            std::optional<Packet> packet = Packet::fromFrame(frame);
+            if (packet && packet->type == MessageType::PRESENCE) {
+                presences.push_back(packet->body);
+                continue;
+            }
+            return packet;
         }
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
         if (peerClosed_ || left.count() <= 0 || !waitReadable(static_cast<int>(left.count()))) return std::nullopt;

@@ -43,7 +43,26 @@
 | `READ_REQ` | 400 | C → S | `{reqId, peer, seq}` 或 `{reqId, groupNo, seq}`：这个会话已读到 `seq` |
 | `READ_RESP` | 401 | S → C | `{reqId, ok}` |
 | `READ_RECEIPT` | 402 | S → C | `{reader, seq}`：私信的对方已读到 `seq`（群消息不发回执） |
+| `CALL_REQ` | 500 | C → S | `{reqId, op, args}`：通用请求，`op` 见下表 |
+| `CALL_RESP` | 501 | S → C | 成功：`{reqId, ok: true, data}`；失败：`{reqId, ok: false, error}` |
+| `PRESENCE` | 510 | S → C | `{account, online}`：好友上线 / 下线 |
+| `MSG_REVOKED` | 511 | S → C | `{seq, revokedBy}`：会话里的一条消息被撤回 |
 | `ERROR_RESP` | 900 | S → C | `{reqId?, code, message}` |
+
+`LOGIN_RESP` 成功时还带有 `location`（所在地）和 `momentsName`（QQ空间 / 朋友圈……）。
+
+### 通用请求（`CALL_REQ`）
+
+查询、修改类的操作都走通用请求：服务端用"操作名 → 处理函数"的表分发，新增一种操作不必新增消息类型。
+
+| `op` | `args` | `data` |
+|---|---|---|
+| `contacts.list` | — | `{friends: [{id, nickname, remark, online, location, birthday, tAge, mutual: [{id, nickname}]}]}` |
+| `groups.list` | — | `{groups: [{groupNo, name, mode, modeName, notice, owner, admins, muted, members: [{id, nickname}], canSpeak, canMentionAll, revocable}]}` |
+| `reads.get` | — | `{private: {好友: 我读到的序号}, peerRead: {好友: 对方读到的序号}, groups: {群号: 我读到的序号}}` |
+| `message.revoke` | `{seq}` | `{seq, revokedBy}`；同时向会话里其他在线的人推送 `MSG_REVOKED` |
+
+`groups.list` 里的 `canSpeak`（我能否发言）、`canMentionAll`（我能否 @所有人）、`revocable`（我能撤回哪些成员的消息），都由服务端按群当前的管理策略算好。客户端直接使用，不必重复实现权限规则，也就不会出现两边规则不一致的问题。
 
 ### 消息格式（`MSG_PUSH` 和 `SYNC_RESP.messages` 中的每一项）
 
@@ -53,6 +72,7 @@
 ```
 
 - 私信带 `to`，群消息带 `groupNo`。
+- 群消息 @ 了哪些成员放在 `mentions`（账号数组）：`@昵称`，以及有权限的人发的 `@所有人`。
 - 群系统提示（如"A 邀请 B 加入了群聊"）带 `"system": true`。
 - 撤回的消息带 `"revoked": true` 和 `revokedBy`，`text` 为空，不再下发原文。
 
