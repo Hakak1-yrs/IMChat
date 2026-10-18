@@ -63,7 +63,7 @@ if(WIN32)
 endif()
 
 # ---- server ----
-add_library(imchat_server STATIC src/server/ChatServer.cpp src/server/ChatServer.h)
+add_library(imchat_server STATIC src/server/ChatServer.cpp src/server/ChatServer.h src/server/LoginToken.cpp src/server/LoginToken.h)
 target_include_directories(imchat_server PUBLIC src/server)
 target_link_libraries(imchat_server PUBLIC imchat_reactor imchat_protocol imchat_core)
 add_executable(IMChatServer src/server/main.cpp)

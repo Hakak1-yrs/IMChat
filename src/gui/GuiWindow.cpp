@@ -179,13 +179,13 @@ float GuiWindow::scale() const { return dpi_ / 96.0f; }
 
 Canvas& GuiWindow::canvas() { return canvas_; }
 
-Session& GuiWindow::session() { return remote_ ? static_cast<Session&>(*remote_) : static_cast<Session&>(local_); }
+Session& GuiWindow::session() { return remote_ ? static_cast<Session&>(remote_->current()) : static_cast<Session&>(local_); }
 
 LocalSession& GuiWindow::localSession() { return local_; }
 
-RemoteSession* GuiWindow::remoteSession() { return remote_.get(); }
+RemoteSession* GuiWindow::remoteSession() { return remote_ ? &remote_->current() : nullptr; }
 
-void GuiWindow::startRemote(std::unique_ptr<RemoteSession> session) { remote_ = std::move(session); }
+void GuiWindow::startRemote(std::unique_ptr<RemoteAccounts> accounts) { remote_ = std::move(accounts); }
 
 void GuiWindow::endRemote() { remote_.reset(); }
 

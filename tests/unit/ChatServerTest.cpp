@@ -3,6 +3,7 @@
 #include <memory>
 #include <thread>
 #include "Log.h"
+#include "LoginToken.h"
 #include "TestClient.h"
 #include "TestServer.h"
 
@@ -839,4 +840,59 @@ TEST_F(ChatServerTest, MomentsRespectVisibilityAndNotifyFriends) {
     EXPECT_EQ(call(li, "moments.delete", { { "seq", seq } })["ok"], false);   // 不能删别人的动态
     ASSERT_EQ(call(zhang, "moments.delete", { { "seq", seq } })["ok"], true);
     EXPECT_FALSE(findMoment(call(li, "moments.list")["data"]["moments"], "周末去爬山"));
+}
+
+// ======================== 登录令牌：一处登录，多个服务同时在线 ========================
+
+TEST(LoginTokenTest, VerifiesSignatureAndExpiry) {
+    LoginToken tokens("secret-for-test-0123456789abcdef");
+    int userId = 0;
+    const std::string token = tokens.issue(7);
+    EXPECT_TRUE(tokens.verify(token, userId));
+    EXPECT_EQ(userId, 7);
+
+    std::string forged = token;
+    forged[0] = '8';   // 改用户编号：签名对不上
+    EXPECT_FALSE(tokens.verify(forged, userId));
+    EXPECT_FALSE(LoginToken("another-secret-0123456789abcdef").verify(token, userId));   // 别的密钥签发的
+    EXPECT_FALSE(tokens.verify(tokens.issue(7, std::chrono::seconds(-1)), userId));      // 已过期
+    EXPECT_FALSE(tokens.verify("garbage", userId));
+    EXPECT_FALSE(tokens.verify("", userId));
+}
+
+TEST_F(ChatServerTest, PasswordLoginListsOtherServicesAndTokenLogsThemIn) {
+    startServer();
+    TestClient qq(port_);
+    const json response = qq.login("QQ", "10001");
+    ASSERT_EQ(response["ok"], true);
+    const std::string token = response["token"].get<std::string>();
+    ASSERT_FALSE(token.empty());
+    const json services = response["services"];   // 张三还开通了微信 wx2001、微博 10001
+    ASSERT_EQ(services.size(), 2u);
+    EXPECT_TRUE(findById(services, "account", "wx2001"));
+
+    TestClient wechat(port_);
+    wechat.send(MessageType::LOGIN_REQ, { { "service", "WECHAT" }, { "account", "wx2001" }, { "token", token } });
+    std::optional<Packet> ok = wechat.receive();
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(ok->body["ok"], true);
+    EXPECT_EQ(ok->body["nickname"], "张三丰");
+    EXPECT_EQ(onlineCount(), 2u);   // QQ 和微信各一条连接，同时在线
+
+    // 令牌只能登录同一个人的账号；篡改过的令牌无效
+    TestClient other(port_);
+    other.send(MessageType::LOGIN_REQ, { { "service", "QQ" }, { "account", "10002" }, { "token", token } });
+    EXPECT_EQ(other.receive()->body["ok"], false);
+    std::string forged = token;
+    forged.back() = forged.back() == '0' ? '1' : '0';
+    TestClient tampered(port_);
+    tampered.send(MessageType::LOGIN_REQ, { { "service", "WEIBO" }, { "account", "10001" }, { "token", forged } });
+    EXPECT_EQ(tampered.receive()->body["ok"], false);
+
+    // 服务端重启（密钥保存着）后令牌仍然有效
+    server_.reset();
+    startServer();
+    TestClient again(port_);
+    again.send(MessageType::LOGIN_REQ, { { "service", "WEIBO" }, { "account", "10001" }, { "token", token } });
+    EXPECT_EQ(again.receive()->body["ok"], true);
 }

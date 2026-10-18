@@ -10,7 +10,10 @@ public:
     static bool verify(const std::string& plain, const std::string& record);      // 校验密码
     static bool isRecord(const std::string& text);                                // 是否已经是加密记录（用于兼容旧数据）
 
+    static std::string randomHex(size_t bytes);   // 密码学安全的随机数（盐、服务端密钥）
+    static std::string hmacSha256Hex(const std::string& key, const std::string& data);   // 登录令牌的签名
+    static bool equalsConstantTime(const std::string& a, const std::string& b);          // 比较耗时与“哪一位不同”无关
+
 private:
     static std::string sha256Hex(const std::string& data);
-    static std::string randomHex(size_t bytes);
 };

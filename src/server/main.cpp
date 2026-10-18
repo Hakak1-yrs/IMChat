@@ -1,11 +1,14 @@
 // IMChat 服务端。用法：IMChatServer [--port 9000] [--data 数据目录] [--idle-timeout 秒] [--verbose]
 #include "ChatServer.h"   // 网络头文件（winsock2.h）必须在其他 Windows 头文件之前
 #include <csignal>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 #include "DataDir.h"
 #include "Log.h"
+#include "Password.h"
 #include "Platform.h"
 #include "Util.h"
 
@@ -45,6 +48,19 @@ void onSignal(int) {
 }
 #endif
 
+// 登录令牌的签名密钥：保存在数据目录的 server.key 里，服务端重启后客户端手里的令牌仍然有效。
+// 第一次启动时随机生成；删除这个文件会让所有已签发的令牌失效（客户端需要重新输入密码）
+std::string loadTokenSecret(const std::string& dataDir) {
+    const std::filesystem::path file = Util::pathOf(dataDir + "server.key");
+    std::string secret;
+    std::ifstream(file) >> secret;
+    if (secret.size() >= 32) return secret;
+    secret = Password::randomHex(32);
+    std::ofstream(file) << secret << '\n';
+    Log::info("已生成登录令牌密钥 server.key");
+    return secret;
+}
+
 void printUsage() {
     std::cout << "用法：IMChatServer [--port 端口，默认 9000] [--data 数据目录] [--idle-timeout 秒，默认 90] [--verbose]\n";
 }
@@ -78,6 +94,7 @@ int main(int argc, char** argv) {
     else if (dataDir.back() != '\\' && dataDir.back() != '/') dataDir += '/';
     Log::info("数据目录：" + DataDir::absolute(dataDir));
 
+    options.tokenSecret = loadTokenSecret(dataDir);
     Platform platform(dataDir);
     EventLoop loop;
     ChatServer server(loop, platform, options);

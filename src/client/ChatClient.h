@@ -60,8 +60,10 @@ public:
     void start(const std::string& host, std::uint16_t port);   // 启动网络线程并开始连接（断开后自动重连）
     void stop();                                               // 断开并结束网络线程
 
-    // 登录信息会被记住，断线重连后自动重新登录
+    // 登录信息会被记住，断线重连后自动重新登录（登录成功后改用服务端签发的令牌，不再保存密码）
     void login(const std::string& service, const std::string& account, const std::string& password);
+    // 凭令牌登录本人的另一个服务账号（令牌来自用密码登录时的 LOGIN_RESP）
+    void loginWithToken(const std::string& service, const std::string& account, const std::string& token);
     std::string sendText(const std::string& to, const std::string& text);   // 私信，返回 clientMsgId
     std::string sendGroupText(int groupNo, const std::string& text);
     void markRead(const std::string& peer, int seq);
@@ -78,6 +80,7 @@ private:
         std::string service;
         std::string account;
         std::string password;
+        std::string token;   // 不为空时用令牌登录
     };
 
     void onConnected(const std::shared_ptr<TcpConnection>& connection);

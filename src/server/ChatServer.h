@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include "LoginToken.h"
 #include "Packet.h"
 #include "ServiceType.h"
 #include "TcpServer.h"
@@ -28,6 +29,7 @@ public:
         std::uint16_t port = 9000;
         std::chrono::milliseconds idleTimeout{ 90000 };   // 这么久没有收到任何数据（包括心跳）就断开
         std::chrono::milliseconds idleCheckInterval{ 5000 };
+        std::string tokenSecret;   // 登录令牌的签名密钥；为空时随机生成（服务端重启后旧令牌失效）
     };
 
     ChatServer(EventLoop& loop, Platform& platform, Options options);
@@ -112,6 +114,7 @@ private:
     Platform& platform_;
     Options options_;
     TcpServer server_;
+    LoginToken tokens_;
     EventLoop::TimerId idleTimer_ = 0;
     std::unordered_map<std::uint64_t, Session> sessions_;              // 连接编号 → 会话
     std::unordered_map<std::string, std::uint64_t> online_;            // "QQ 10001" → 连接编号

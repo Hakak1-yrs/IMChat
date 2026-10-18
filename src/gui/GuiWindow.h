@@ -9,7 +9,7 @@
 #include <vector>
 #include "Canvas.h"
 #include "LocalSession.h"
-#include "RemoteSession.h"
+#include "RemoteAccounts.h"
 
 class View;
 class Dialog;
@@ -31,8 +31,8 @@ public:
     void showMain();
     // 演示用：启动参数 --login 服务 账号 密码 时直接登录（方便同时打开几个窗口演示多人聊天）
     bool autoLogin(ServiceType type, const std::string& id, const std::string& password);
-    // 联网模式：登录页创建 RemoteSession 并开始连接，连接、登录、加载数据完成后由登录页切换到主界面
-    void startRemote(std::unique_ptr<RemoteSession> session);
+    // 联网模式：登录页创建 RemoteAccounts 并开始连接，连接、登录、加载数据完成后由登录页切换到主界面
+    void startRemote(std::unique_ptr<RemoteAccounts> accounts);
     void endRemote();                            // 退出联网模式（退出登录、登录失败、被挤下线）
 
     void invalidate();
@@ -50,7 +50,7 @@ public:
     Canvas& canvas();
     Session& session();                          // 当前使用的会话：联网模式为 RemoteSession，否则为 LocalSession
     LocalSession& localSession();                // 单机模式的会话（只在单机模式下开放的功能页使用）
-    RemoteSession* remoteSession();              // 联网模式下的会话，单机模式为空
+    RemoteSession* remoteSession();              // 联网模式下当前服务的会话，单机模式为空
     Platform& platform();
     MainView& mainView();
     LoginView& loginView();
@@ -75,7 +75,7 @@ private:
     HWND hwnd_ = nullptr;
     Platform& platform_;
     LocalSession local_;
-    std::unique_ptr<RemoteSession> remote_;
+    std::unique_ptr<RemoteAccounts> remote_;     // 联网模式：本人的全部服务账号
     Canvas canvas_;
     float dpi_ = 96.0f;
     HFONT editFont_ = nullptr;

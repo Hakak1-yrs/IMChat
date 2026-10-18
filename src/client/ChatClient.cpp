@@ -56,8 +56,15 @@ void ChatClient::stop() {
 
 void ChatClient::login(const std::string& service, const std::string& account, const std::string& password) {
     loop_->runInLoop([this, service, account, password] {
-        credentials_ = Credentials{ service, account, password };
+        credentials_ = Credentials{ service, account, password, "" };
         if (state_ == State::CONNECTED) sendLogin();   // 还没连上的话，连上后自动登录
+    });
+}
+
+void ChatClient::loginWithToken(const std::string& service, const std::string& account, const std::string& token) {
+    loop_->runInLoop([this, service, account, token] {
+        credentials_ = Credentials{ service, account, "", token };
+        if (state_ == State::CONNECTED) sendLogin();
     });
 }
 
@@ -195,6 +202,12 @@ void ChatClient::handle(const Packet& packet) {
 void ChatClient::handleLoginResponse(const json& body) {
     const bool ok = body.value("ok", false);
     if (ok) {
+        // 换成服务端签发的令牌：之后断线重连都用它登录，明文密码不再留在内存里
+        const std::string token = body.value("token", "");
+        if (!token.empty() && credentials_) {
+            credentials_->token = token;
+            credentials_->password.clear();
+        }
         setState(State::LOGGED_IN);
         requestSync(lastSeq_);   // 先补齐离线期间的消息，同步完再重发待确认的消息
     } else {
@@ -238,9 +251,10 @@ int ChatClient::sendPacket(MessageType type, json body) {
 }
 
 void ChatClient::sendLogin() {
-    sendPacket(MessageType::LOGIN_REQ, json{ { "service", credentials_->service },
-                                             { "account", credentials_->account },
-                                             { "password", credentials_->password } });
+    json request = { { "service", credentials_->service }, { "account", credentials_->account } };
+    if (!credentials_->token.empty()) request["token"] = credentials_->token;
+    else request["password"] = credentials_->password;
+    sendPacket(MessageType::LOGIN_REQ, std::move(request));
 }
 
 void ChatClient::requestSync(int afterSeq) { sendPacket(MessageType::SYNC_REQ, json{ { "afterSeq", afterSeq } }); }

@@ -15,6 +15,7 @@ class TestServer {
 public:
     TestServer(std::string dataDir, ChatServer::Options options) : dataDir_(std::move(dataDir)) {
         options.ip = "127.0.0.1";
+        if (options.tokenSecret.empty()) options.tokenSecret = "unit-test-token-secret-0123456789abcdef";   // 重启后令牌仍然有效
         thread_ = std::make_unique<LoopThread>(
             [this, options](EventLoop& loop) {
                 platform_ = std::make_unique<Platform>(dataDir_);

@@ -280,9 +280,9 @@ void LoginView::startRemote(const std::string& server, const std::string& id, co
         return;
     }
     serverText_ = GuiText::wide(server);
-    auto session = std::make_unique<RemoteSession>(host, port);
-    session->start(service(), id, password);
-    window_.startRemote(std::move(session));
+    auto accounts = std::make_unique<RemoteAccounts>(host, port);
+    accounts->start(service(), id, password);   // 登录成功后，本人开通的其他服务凭令牌自动登录
+    window_.startRemote(std::move(accounts));
     connecting_ = true;
     connectStarted_ = GetTickCount64();
     error_.clear();

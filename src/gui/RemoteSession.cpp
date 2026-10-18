@@ -1,6 +1,7 @@
 #include "RemoteSession.h"
 #include <algorithm>
 #include <ctime>
+#include "RemoteAccounts.h"
 
 using json = nlohmann::json;
 
@@ -83,7 +84,8 @@ GroupInfo groupInfoFrom(const json& data) {
 
 }  // namespace
 
-RemoteSession::RemoteSession(std::string host, std::uint16_t port) : host_(std::move(host)), port_(port) {}
+RemoteSession::RemoteSession(std::string host, std::uint16_t port, RemoteAccounts* family)
+    : host_(std::move(host)), port_(port), family_(family) {}
 
 RemoteSession::~RemoteSession() {
     if (client_) client_->stop();   // 先停网络线程，之后不会再有回调往收件箱里放东西
@@ -96,6 +98,14 @@ void RemoteSession::start(ServiceType type, const std::string& account, const st
     client_ = std::make_unique<ChatClient>(callbacks());
     client_->start(host_, port_);
     client_->login(ServiceTypeHelper::code(type), account, password);
+}
+
+void RemoteSession::startWithToken(ServiceType type, const std::string& account, const std::string& token) {
+    me_.type = type;
+    me_.id = account;
+    client_ = std::make_unique<ChatClient>(callbacks());
+    client_->start(host_, port_);
+    client_->loginWithToken(ServiceTypeHelper::code(type), account, token);
 }
 
 ChatClient::Callbacks RemoteSession::callbacks() {
@@ -168,9 +178,12 @@ std::string RemoteSession::server() const { return host_ + ":" + std::to_string(
 
 void RemoteSession::onLogin(bool ok, const json& response) {
     if (!ok) {
-        if (loginState_ != LoginState::READY) {   // 首次登录失败；重连后的自动登录失败不会走到这里（密码不会变）
+        if (loginState_ != LoginState::READY) {   // 首次登录失败
             loginState_ = LoginState::FAILED;
             loginError_ = response.value("error", "登录失败");
+        } else {   // 重连后凭令牌登录失败（令牌过期、服务端换了密钥）：回到登录页重新输入密码
+            loggedIn_ = false;
+            notice_ = response.value("error", "登录已失效，请重新登录");
         }
         return;
     }
@@ -180,6 +193,7 @@ void RemoteSession::onLogin(bool ok, const json& response) {
     loggedIn_ = true;
     if (loginState_ != LoginState::READY) loginState_ = LoginState::LOADING;
     loadLists();   // 断线重连后也重新取一遍：断线期间好友、群可能有变化
+    if (family_) family_->onLogin(response);   // 一处登录：凭令牌登录本人开通的其他服务
 }
 
 void RemoteSession::loadLists() {
@@ -402,12 +416,18 @@ void RemoteSession::logout() {
 
 AccountView RemoteSession::me() const { return me_; }
 
-std::vector<ServiceType> RemoteSession::services() const { return { me_.type }; }   // 联网模式目前一次只登录一个服务
+std::vector<ServiceType> RemoteSession::services() const {
+    if (family_) return family_->services();
+    return { me_.type };
+}
 
-bool RemoteSession::switchService(ServiceType type) { return type == me_.type; }
+bool RemoteSession::switchService(ServiceType type) { return family_ ? family_->switchTo(type) : type == me_.type; }
 
 int RemoteSession::unreadOf(ServiceType type) const {
-    if (type != me_.type) return 0;
+    if (type != me_.type) {   // 本人的其他服务：问那个服务的会话
+        RemoteSession* other = family_ ? family_->find(type) : nullptr;
+        return other ? other->unreadOf(type) : 0;
+    }
     int total = 0;
     for (const Conversation& c : recentChats()) total += c.unread;
     return total;
@@ -795,11 +815,17 @@ std::string RemoteSession::revokeText(const Message& m) const {
     return who(by) + "撤回了" + who(m.sender()) + "的一条消息";
 }
 
-bool RemoteSession::changed() {
+bool RemoteSession::pollChanges() {
     drain();
     const bool result = dirty_;
     dirty_ = false;
     return result;
+}
+
+bool RemoteSession::changed() {
+    const bool mine = pollChanges();
+    const bool others = family_ && family_->pollOthers(*this);   // 其他服务的新消息：导航栏红点
+    return mine || others;
 }
 
 std::string RemoteSession::takeNotice() {

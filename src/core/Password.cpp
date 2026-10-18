@@ -28,6 +28,20 @@ std::string Password::sha256Hex(const std::string& data) {
     return toHex(digest, sizeof(digest));
 }
 
+std::string Password::hmacSha256Hex(const std::string& key, const std::string& data) {
+    unsigned char digest[32] = {};
+    BCryptHash(BCRYPT_HMAC_SHA256_ALG_HANDLE, reinterpret_cast<PUCHAR>(const_cast<char*>(key.data())), static_cast<ULONG>(key.size()),
+               reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())), static_cast<ULONG>(data.size()), digest, sizeof(digest));
+    return toHex(digest, sizeof(digest));
+}
+
+bool Password::equalsConstantTime(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    unsigned char diff = 0;
+    for (size_t i = 0; i < a.size(); ++i) diff |= static_cast<unsigned char>(a[i] ^ b[i]);
+    return diff == 0;
+}
+
 std::string Password::randomHex(size_t bytes) {
     std::vector<unsigned char> buffer(bytes);
     // 使用系统推荐的密码学安全随机数生成器
@@ -44,11 +58,7 @@ bool Password::verify(const std::string& plain, const std::string& record) {
     if (!isRecord(record)) return false;
     std::string salt = record.substr(0, 32);
     std::string expected = record.substr(33);
-    std::string actual = sha256Hex(salt + plain);
-    // 逐字节比较全部字符，比较耗时与“哪一位不同”无关
-    unsigned char diff = 0;
-    for (size_t i = 0; i < expected.size(); ++i) diff |= static_cast<unsigned char>(expected[i] ^ actual[i]);
-    return diff == 0;
+    return equalsConstantTime(expected, sha256Hex(salt + plain));
 }
 
 bool Password::isRecord(const std::string& text) {

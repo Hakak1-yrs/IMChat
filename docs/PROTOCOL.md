@@ -32,7 +32,7 @@
 |---|---|---|---|
 | `PING` | 1 | C → S | `{}` |
 | `PONG` | 2 | S → C | `{}` |
-| `LOGIN_REQ` | 100 | C → S | `{reqId, service: "QQ"\|"WECHAT"\|"WEIBO"\|"WEISHANG", account, password}` |
+| `LOGIN_REQ` | 100 | C → S | `{reqId, service: "QQ"\|"WECHAT"\|"WEIBO"\|"WEISHANG", account, password}`，或用 `token` 代替 `password` |
 | `LOGIN_RESP` | 101 | S → C | 成功：`{reqId, ok: true, nickname, unreadPrivate, unreadGroup}`；失败：`{reqId, ok: false, error}` |
 | `KICKED` | 102 | S → C | `{reason}`。同一账号在别处登录，发完这条通知后服务端关闭连接 |
 | `SEND_MSG_REQ` | 200 | C → S | 私信：`{reqId, clientMsgId, to, text}`；群消息：`{reqId, clientMsgId, groupNo, text}` |
@@ -50,7 +50,18 @@
 | `DATA_CHANGED` | 512 | S → C | `{topics: ["contacts", "social", "groups", "moments"]}`：别人的操作影响了我（如通过了我的好友申请、把我拉进群），重新获取对应数据 |
 | `ERROR_RESP` | 900 | S → C | `{reqId?, code, message}` |
 
-`LOGIN_RESP` 成功时还带有 `location`（所在地）和 `momentsName`（QQ空间 / 朋友圈……）。
+`LOGIN_RESP` 成功时还带有 `location`（所在地）、`momentsName`（QQ空间 / 朋友圈……），以及：
+- `token`：登录令牌，可以在 `LOGIN_REQ` 里代替 `password`（`{service, account, token}`）；
+- `services`：本人开通的其他服务 `[{service, account, nickname}]`。
+
+### 登录令牌
+
+题目要求"一处登录，其他服务视为自动登录"。客户端用密码登录一个服务后，凭响应里的令牌再登录 `services` 中的其他账号，每个服务一条连接，同时在线。断线重连时客户端也用令牌重新登录，明文密码登录成功后就从内存里清除。
+
+- 格式：`用户编号.过期时间.签名`，签名 = HMAC-SHA256(服务端密钥, `用户编号.过期时间`)，有效期 7 天。
+- 服务端不保存令牌，验证时重新计算签名比对。没有密钥就伪造不出签名，改动用户编号或过期时间都会让签名对不上。
+- 令牌只能登录同一个用户名下的账号。
+- 密钥保存在数据目录的 `server.key` 中，第一次启动时随机生成，所以服务端重启后令牌仍然有效。删除这个文件，所有令牌立即失效。
 
 ### 通用请求（`CALL_REQ`）
 
@@ -161,7 +172,7 @@
 客户端（`src/client/ChatClient` 的做法）：
 
 1. 要发的消息先进入**待确认队列**，收到 `SEND_MSG_ACK` 才移除。
-2. 断线后自动重连，重连间隔按指数退避（0.5 秒起，最长 30 秒），然后用记住的账号重新登录。
+2. 断线后自动重连，重连间隔按指数退避（0.5 秒起，最长 30 秒），然后用登录令牌重新登录。
 3. 登录成功后先 `SYNC_REQ{afterSeq: 本地最大序号}`；`hasMore` 为 true 时，从这一批最后一条的序号继续要，直到取完。
 4. 同步完成后，把待确认队列里的消息**按原顺序、用原来的 `clientMsgId`** 重发。
 5. 推送和同步可能重叠（比如登录后同步期间又来了新消息），客户端按 `seq` 去重，每条消息只交给界面一次。

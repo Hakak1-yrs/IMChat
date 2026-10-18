@@ -10,6 +10,8 @@
 #include "ChatClient.h"
 #include "Session.h"
 
+class RemoteAccounts;
+
 // 联网模式的会话：通过 ChatClient 连接 IMChatServer，界面需要的数据保存在本地缓存里。
 //
 // 线程：ChatClient 的回调在网络线程里执行，这里不直接改缓存，而是把“要做的修改”放进收件箱；
@@ -22,10 +24,13 @@ class RemoteSession : public Session {
 public:
     enum class LoginState { CONNECTING, LOADING, READY, FAILED };
 
-    RemoteSession(std::string host, std::uint16_t port);
+    // family：本人全部服务账号的集合（一处登录、多个服务同时在线），单独使用时为空
+    RemoteSession(std::string host, std::uint16_t port, RemoteAccounts* family = nullptr);
     ~RemoteSession() override;
 
     void start(ServiceType type, const std::string& account, const std::string& password);
+    void startWithToken(ServiceType type, const std::string& account, const std::string& token);
+    bool pollChanges();               // 只处理自己的收件箱（changed() 还会顺带处理本人其他服务的）
     LoginState loginState();          // 登录页定时查看；同时处理收件箱
     std::string loginError() const;
     std::string server() const;       // "host:port"
@@ -132,6 +137,7 @@ private:
 
     std::string host_;
     std::uint16_t port_;
+    RemoteAccounts* family_;
     std::unique_ptr<ChatClient> client_;
     std::mutex mutex_;
     std::vector<std::function<void()>> inbox_;   // 受 mutex_ 保护

@@ -7,7 +7,9 @@
 #include "GroupPolicy.h"
 #include "GroupService.h"
 #include "Log.h"
+#include "Password.h"
 #include "Platform.h"
+#include "User.h"
 #include "ServiceType.h"
 #include "Util.h"
 
@@ -87,7 +89,11 @@ json groupInfoJson(const GroupInfo& g) {
 }  // namespace
 
 ChatServer::ChatServer(EventLoop& loop, Platform& platform, Options options)
-    : loop_(loop), platform_(platform), options_(std::move(options)), server_(loop) {
+    : loop_(loop),
+      platform_(platform),
+      options_(std::move(options)),
+      server_(loop),
+      tokens_(options_.tokenSecret.empty() ? Password::randomHex(32) : options_.tokenSecret) {
     registerApi();
 }
 
@@ -201,7 +207,17 @@ void ChatServer::handleLogin(Session& session, const json& request) {
     }
     const std::string id = field(request, "account");
     ServiceBase* account = platform_.findAccount(type, id);
-    if (!account || !account->checkPassword(field(request, "password"))) {
+    User* owner = platform_.ownerOf(account);
+    const std::string token = field(request, "token");
+    if (!token.empty()) {
+        // 凭令牌登录：令牌签名正确、没有过期，并且这个账号属于令牌对应的用户
+        int userId = 0;
+        if (!owner || !tokens_.verify(token, userId) || owner->id() != userId) {
+            response["error"] = "登录已失效，请重新输入密码登录";
+            send(session.connection, MessageType::LOGIN_RESP, response);
+            return;
+        }
+    } else if (!account || !owner || !account->checkPassword(field(request, "password"))) {
         // 不区分“账号不存在”和“密码错误”，避免被用来探测哪些账号存在
         response["error"] = "账号或密码错误";
         send(session.connection, MessageType::LOGIN_RESP, response);
@@ -222,6 +238,14 @@ void ChatServer::handleLogin(Session& session, const json& request) {
     response["momentsName"] = account->momentsName();
     response["unreadPrivate"] = unreadPrivate;
     response["unreadGroup"] = unreadGroup;
+    // 令牌：重连时代替密码；本人开通的其他服务也凭它登录（一处登录、多个服务同时在线）
+    response["token"] = tokens_.issue(owner->id());
+    json services = json::array();
+    for (const ServiceBase* s : owner->services()) {
+        if (s == account) continue;
+        services.push_back({ { "service", ServiceTypeHelper::code(s->type()) }, { "account", s->id() }, { "nickname", s->nickname() } });
+    }
+    response["services"] = std::move(services);
     send(session.connection, MessageType::LOGIN_RESP, response);
     Log::info(key + " 从 " + session.connection->peer() + " 登录");
     if (previousId == 0) notifyPresence(key, true);   // 换一处登录不算“上线”
