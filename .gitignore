@@ -25,3 +25,6 @@ out/
 
 # Runtime data (data_demo/ holds the committed seed data)
 data/
+
+# Test fixtures created by the test runner
+test_tmp/

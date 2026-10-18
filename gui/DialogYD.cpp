@@ -65,7 +65,7 @@ DialogYD& DialogYD::cancelText(const std::wstring& text) {
 // ======================== 读取结果 ========================
 
 std::string DialogYD::text(size_t field) const {
-    return field < fields_.size() && fields_[field].edit ? UtilYD::trim(GuiTextYD::gbk(GuiTextYD::editText(fields_[field].edit)))
+    return field < fields_.size() && fields_[field].edit ? UtilYD::trim(GuiTextYD::utf8(GuiTextYD::editText(fields_[field].edit)))
                                                          : "";
 }
 

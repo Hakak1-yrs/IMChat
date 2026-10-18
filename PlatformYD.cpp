@@ -23,14 +23,14 @@ std::string linkProblem(const ServiceBaseYD& a, const ServiceBaseYD& b) {
     return a.serviceName() + "与" + b.serviceName() + "对应的QQ号不一致";
 }
 
-// 消息内容检查：不能为空，长度有限制（GBK 一个汉字占 2 个字节）
+// 消息内容检查：不能为空，长度有限制（按字符数计算）
 bool messageTextOk(const std::string& text, std::string& msg) {
     if (text.empty()) {
         msg = "消息内容不能为空。";
         return false;
     }
-    if (text.size() > 500) {
-        msg = "消息太长（最多 250 个汉字），请分几次发送。";
+    if (UtilYD::charCount(text) > 250) {
+        msg = "消息太长（最多 250 个字），请分几次发送。";
         return false;
     }
     return true;
@@ -55,18 +55,6 @@ double secondsSince(const std::string& time) {
     return std::difftime(std::time(nullptr), std::mktime(&t));
 }
 
-// 摘要：最多 maxBytes 个字节，不会把 GBK 汉字从中间截断
-std::string excerpt(const std::string& text, size_t maxBytes) {
-    if (text.size() <= maxBytes) return text;
-    size_t i = 0;
-    while (i < text.size()) {
-        const size_t step = static_cast<unsigned char>(text[i]) >= 0x81 ? 2 : 1;
-        if (i + step > maxBytes) break;
-        i += step;
-    }
-    return text.substr(0, i) + "…";
-}
-
 }  // namespace
 
 PlatformYD::PlatformYD(const std::string& dataDir)
@@ -81,8 +69,8 @@ PlatformYD::PlatformYD(const std::string& dataDir)
     if (!groupsFile_.read(groups)) std::cout << "[系统] 未找到 groups.txt\n";
     subGroupsFile_.read(subGroups);
     for (const DataFileYD* f : { &usersFile_, &accountsFile_, &friendsFile_, &groupsFile_, &subGroupsFile_ }) {
-        if (f->convertedFromUtf8())
-            std::cout << "[系统] " << f->fileName() << " 被其他编辑器保存成了 UTF-8 编码，已自动转换读取，保存时写回 GBK。\n";
+        if (f->convertedFromGbk())
+            std::cout << "[系统] " << f->fileName() << " 是旧版本的 GBK 编码，已自动转换读取，保存时写成 UTF-8。\n";
     }
 
     // 必须按依赖顺序加载：用户 → 账号 → 好友 → 群，最后统一检查跨文件的一致性
@@ -1162,7 +1150,7 @@ std::vector<std::string> PlatformYD::momentNotices(const ServiceBaseYD& me, bool
         if (post == posts.end() || deletedPosts.count(post->first)) continue;
         const bool myPost = post->second->field(0) == me.id();
         const std::string who = nickOf(me.type(), r.field(1));
-        const std::string what = "“" + excerpt(post->second->text, 24) + "”";
+        const std::string what = "“" + UtilYD::truncate(post->second->text, 12) + "”";
         if (r.kind == 'L' && myPost && r.field(2) == "1") result.push_back(who + " 赞了你的动态 " + what);
         if (r.kind == 'K' && !deletedComments.count(r.seq)) {
             if (r.field(2) == me.id()) result.push_back(who + " 回复了你：" + r.text);

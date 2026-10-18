@@ -18,9 +18,9 @@ static BOOL WINAPI onConsoleClose(DWORD type) {
 }
 
 int main() {
-    // 源码中的中文按 GBK 编译，控制台和数据文件也统一使用 GBK，避免乱码
-    SetConsoleOutputCP(936);
-    SetConsoleCP(936);
+    // 程序内部、数据文件和网络通信统一使用 UTF-8；控制台也切换到 UTF-8 输出
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
 
     const std::string dataDir = DataDirYD::find();
     std::cout << "[系统] 数据目录：" << DataDirYD::absolute(dataDir) << "\n";

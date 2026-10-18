@@ -117,7 +117,7 @@ void MomentsPageYD::postDialog() {
         names.push_back(GuiTextYD::wide(platform().displayName(me().type(), f.id())));
     }
     auto dialog = std::make_unique<DialogYD>(window_, L"发表动态");
-    dialog->field(L"这一刻的想法……", L"", L"最多 250 个汉字")
+    dialog->field(L"这一刻的想法……", L"", L"最多 250 个字")
         .choice(L"谁可以看", { L"公开", L"私密", L"部分可见", L"不给谁看" }, 0)
         .pick(L"选择好友（“部分可见”“不给谁看”时使用）", names, true)
         .primary(L"发表", [this, ids](DialogYD& d) {

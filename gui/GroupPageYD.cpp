@@ -264,7 +264,7 @@ void GroupPageYD::editNotice() {
     GroupYD* g = group();
     auto dialog = std::make_unique<DialogYD>(window_, L"发布群公告");
     dialog->message(L"发布后会同时作为一条群消息发出，群成员会收到未读提醒。")
-        .field(L"公告内容", GuiTextYD::wide(g->notice()), L"最多 150 个汉字")
+        .field(L"公告内容", GuiTextYD::wide(g->notice()), L"最多 150 个字")
         .primary(L"发布", [this](DialogYD& d) {
             GroupYD* grp = group();
             const std::string text = d.text(0);

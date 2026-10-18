@@ -300,8 +300,8 @@ bool GroupYD::setNotice(const std::string& op, const std::string& notice, std::s
         return false;
     }
     const std::string text = UtilYD::lineText(notice);
-    if (text.size() > 300) {
-        msg = "群公告太长（最多 150 个汉字）。";
+    if (UtilYD::charCount(text) > 150) {
+        msg = "群公告太长（最多 150 个字）。";
         return false;
     }
     notice_ = text;

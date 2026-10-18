@@ -4,12 +4,12 @@
 #include <string>
 #include <vector>
 
-// 图形界面的文字工具：业务类内部统一使用 GBK 字符串，而 Direct2D / 编辑框使用 UTF-16 宽字符串，
+// 图形界面的文字工具：业务类内部统一使用 UTF-8 字符串，而 Direct2D / 编辑框使用 UTF-16 宽字符串，
 // 两者在界面层相互转换；另外负责界面上的时间显示格式
 class GuiTextYD {
 public:
-    static std::wstring wide(const std::string& gbk);
-    static std::string gbk(const std::wstring& text);     // 无法用 GBK 表示的字符（如表情符号）变成 '?'
+    static std::wstring wide(const std::string& utf8);
+    static std::string utf8(const std::wstring& text);
     static std::wstring editText(HWND edit);
     static std::wstring initial(const std::string& name);  // 头像上显示的第一个字
     static std::wstring listTime(const std::string& time); // 会话列表：今天显示“时:分”，否则“月-日”

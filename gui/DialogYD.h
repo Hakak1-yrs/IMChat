@@ -29,7 +29,7 @@ public:
     DialogYD& cancelText(const std::wstring& text);
 
     // ---- 提交时读取 ----
-    std::string text(size_t field) const;        // 输入框内容（GBK，已去掉首尾空白）
+    std::string text(size_t field) const;        // 输入框内容（UTF-8，已去掉首尾空白）
     int selected(size_t choice) const;
     std::vector<size_t> picked() const;          // 选中的列表项下标
     void setError(const std::wstring& error);

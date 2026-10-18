@@ -513,17 +513,42 @@ void testUnchangedNotWritten() {
     CHECK(fs::last_write_time(dir + "groups.txt") == stampBefore);
 }
 
-void testUtf8FileAccepted() {
-    std::string dir = freshDir("utf8");
-    // users.txt 被另存为带 BOM 的 UTF-8：“张三” 的 UTF-8 编码是 E5 BC A0 E4 B8 89
-    writeFile(dir + "users.txt", "\xEF\xBB\xBF# id name\n1 \xE5\xBC\xA0\xE4\xB8\x89\n2 L4\n3 W5\n4 Z6\n5 S7\n6 Z8\n");
+void testFileEncodings() {
+    {   // 记事本另存的带 BOM 的 UTF-8：去掉 BOM 正常读取，不提示转换
+        std::string dir = freshDir("utf8bom");
+        writeFile(dir + "users.txt", "\xEF\xBB\xBF# id name\n1 \xE5\xBC\xA0\xE4\xB8\x89\n2 L4\n3 W5\n4 Z6\n5 S7\n6 Z8\n");
+        std::string out;
+        auto p = openPlatform(dir, &out);
+        CHECK(!contains(out, "GBK"));
+        CHECK(user(*p, 1).name() == "张三");
+        closePlatform(p);
+    }
+    // 旧版本程序写的 GBK 文件：“张三” 的 GBK 编码是 D5 C5 C8 FD，读入时转换，保存时写成 UTF-8
+    std::string dir = freshDir("gbk");
+    writeFile(dir + "users.txt", "# id name\n1 \xD5\xC5\xC8\xFD\n2 L4\n3 W5\n4 Z6\n5 S7\n6 Z8\n");
     std::string out;
     auto p = openPlatform(dir, &out);
-    CHECK(contains(out, "UTF-8"));
-    CHECK(user(*p, 1).name() == "张三");   // 源文件按 GBK 编译，这里比较的是 GBK 字节
+    CHECK(contains(out, "GBK"));
+    CHECK(user(*p, 1).name() == "张三");
     closePlatform(p);
     std::string saved = readFile(dir + "users.txt");
-    CHECK(contains(saved, "1 张三") && saved.compare(0, 3, "\xEF\xBB\xBF") != 0);   // 写回 GBK，去掉 BOM
+    CHECK(contains(saved, "1 张三") && saved.compare(0, 3, "\xEF\xBB\xBF") != 0);   // UTF-8，不带 BOM
+}
+
+void testUtf8Text() {
+    CHECK(UtilYD::charCount("张三ab") == 4);
+    CHECK(UtilYD::truncate("一二三四五", 3) == "一二三…");
+    CHECK(UtilYD::truncate("一二三", 3) == "一二三");
+    CHECK(UtilYD::narrow(UtilYD::widen("表情😀")) == "表情😀");   // 四字节字符（GBK 时代会变成 '?'）
+    // 长度限制按字符数：250 个汉字（750 字节）可以发，251 个字符不行
+    std::string text;
+    for (int i = 0; i < 250; ++i) text += "字";
+    std::string msg;
+    auto p = openPlatform(freshDir("utf8len"));
+    ServiceBaseYD& zhang = account(*p, ServiceTypeYD::QQ, "10001");
+    CHECK(p->sendPrivate(zhang, "10002", text, msg));
+    CHECK(!p->sendPrivate(zhang, "10002", text + "a", msg));
+    closePlatform(p);
 }
 
 void testMissingDataDir() {
@@ -676,7 +701,8 @@ void testGroupInfoPersistence() {
     closePlatform(p);
     // 手工改坏：禁言名单里有群主自己和不存在的账号 → 加载时去掉并提示
     std::string groups = readFile(dir + "groups.txt");
-    groups.replace(groups.find("10005 10004 周五"), 16, "10005 10004,10001,77777 周五");
+    const std::string before = "10005 10004 周五";
+    groups.replace(groups.find(before), before.size(), "10005 10004,10001,77777 周五");
     writeFile(dir + "groups.txt", groups);
     p = openPlatform(dir, &out);
     CHECK(contains(out, "2 处"));
@@ -907,7 +933,8 @@ void run(const std::string& name, void (*test)()) {
 }  // namespace
 
 int main() {
-    SetConsoleOutputCP(936);
+    SetConsoleOutputCP(CP_UTF8);
+    setvbuf(stdout, nullptr, _IONBF, 0);   // 不缓冲：万一某项测试崩溃，之前的结果也已经输出
     std::error_code ec;
     fs::remove_all(kRoot, ec);
     std::cout << "==== IMSystemYD 自动测试 ====\n";
@@ -926,7 +953,8 @@ int main() {
     run("加载时检查并修正不一致的数据", testRepairOnLoad);
     run("两个窗口同时修改：整组另存、不混合", testConflictKeepsDataConsistent);
     run("内容没变时不写文件", testUnchangedNotWritten);
-    run("UTF-8 编码的数据文件也能读", testUtf8FileAccepted);
+    run("数据文件编码：带 BOM 的 UTF-8、旧版 GBK 自动转换", testFileEncodings);
+    run("UTF-8 文本：按字符计数、截断、四字节字符", testUtf8Text);
     run("data 目录不存在时自动创建", testMissingDataDir);
     run("日期合法性与密码记录", testDateAndPassword);
     run("群消息：发送权限、记录、未读、跨窗口可见", testGroupMessages);

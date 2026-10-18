@@ -2,16 +2,11 @@
 #include <windows.h>
 #include <filesystem>
 #include <fstream>
+#include "UtilYD.h"
 
 namespace fs = std::filesystem;
 
-std::string DataDirYD::toNarrow(const std::wstring& text) {
-    int length = WideCharToMultiByte(CP_ACP, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (length <= 1) return "";
-    std::string result(length - 1, '\0');
-    WideCharToMultiByte(CP_ACP, 0, text.c_str(), -1, &result[0], length, nullptr, nullptr);
-    return result;
-}
+std::string DataDirYD::toNarrow(const std::wstring& text) { return UtilYD::narrow(text); }
 
 std::string DataDirYD::find() {
     const char* candidates[] = { "data\\", "..\\data\\", "..\\..\\data\\", "..\\..\\..\\data\\" };
@@ -33,5 +28,5 @@ std::string DataDirYD::find() {
 
 std::string DataDirYD::absolute(const std::string& dir) {
     std::error_code ec;
-    return toNarrow(fs::absolute(fs::path(dir), ec).wstring());
+    return toNarrow(fs::absolute(UtilYD::pathOf(dir), ec).wstring());
 }

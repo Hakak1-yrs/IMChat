@@ -46,7 +46,7 @@ bool GroupChatRoomYD::host(unsigned short port) {
     std::string line;
     while (true) {
         std::cout << "> " << std::flush;
-        if (!std::getline(std::cin, line)) break;
+        if (!UtilYD::getLine(line)) break;
         line = UtilYD::lineText(line);
         if (line == "/quit") break;
         if (!line.empty()) server.say(line);
@@ -121,7 +121,7 @@ bool GroupChatRoomYD::join(const std::string& ip, unsigned short port) {
     std::string line;
     while (running) {
         std::cout << "> " << std::flush;
-        if (!std::getline(std::cin, line) || !running) break;
+        if (!UtilYD::getLine(line) || !running) break;
         line = UtilYD::lineText(line);
         if (line == "/quit") break;
         if (line.empty()) continue;

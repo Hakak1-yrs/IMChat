@@ -204,7 +204,7 @@ int MessageCenterYD::markOf(const StateYD& state, const std::string& key) {
 MessageCenterYD::StateYD MessageCenterYD::load() const {
     std::lock_guard<std::mutex> lock(mutex_);
     StateYD state;
-    std::ifstream in(filePath_, std::ios::binary);
+    std::ifstream in(UtilYD::pathOf(filePath_), std::ios::binary);
     std::vector<std::pair<MessageYD, int>> messages;          // 消息及其行号
     std::vector<RecordYD> records;
     std::map<std::string, int> clearedAt;                     // "服务 A/G 账号或群号" → 作废记录所在的行号
@@ -294,13 +294,13 @@ bool MessageCenterYD::append(const std::string& line) {
     std::lock_guard<std::mutex> lock(mutex_);
     // 与 ChatLogYD 相同：以 FILE_APPEND_DATA 方式打开，由系统保证每次写入都完整地接在文件末尾
     auto open = [&] {
-        return CreateFileA(filePath_.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+        return CreateFileW(UtilYD::widen(filePath_).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     };
     HANDLE file = open();
     if (file == INVALID_HANDLE_VALUE) {   // data 目录还不存在时先创建
         std::error_code ec;
-        std::filesystem::create_directories(std::filesystem::path(filePath_).parent_path(), ec);
+        std::filesystem::create_directories(UtilYD::pathOf(filePath_).parent_path(), ec);
         file = open();
         if (file == INVALID_HANDLE_VALUE) return false;
     }

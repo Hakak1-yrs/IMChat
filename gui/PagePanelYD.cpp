@@ -78,7 +78,7 @@ void PagePanelYD::placeEdits() {
 
 void PagePanelYD::send() {
     if (!page_ || !composer_) return;
-    const std::string text = UtilYD::lineText(GuiTextYD::gbk(GuiTextYD::editText(composer_)));
+    const std::string text = UtilYD::lineText(GuiTextYD::utf8(GuiTextYD::editText(composer_)));
     if (text.empty()) return;
     SetWindowTextW(composer_, L"");
     hasText_ = false;
@@ -262,7 +262,7 @@ void PagePanelYD::paint(CanvasYD& c) {
                     const D2D1_RECT_F avatar = D2D1::RectF(ax, cy - size / 2, ax + size, cy + size / 2);
                     if (row.square) c.fillRound(avatar, 12, ThemeYD::avatar(row.avatarKey));
                     else c.fillCircle(ax + size / 2, cy, size / 2, ThemeYD::avatar(row.avatarKey));
-                    std::wstring initial = row.avatarName.empty() ? L"?" : GuiTextYD::initial(GuiTextYD::gbk(row.avatarName));
+                    std::wstring initial = row.avatarName.empty() ? L"?" : GuiTextYD::initial(GuiTextYD::utf8(row.avatarName));
                     c.text(initial, avatar, 16, ThemeYD::rgb(0xFFFFFF), AlignYD::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
                     const float tx = ax + size + 14;
                     float titleRight = (std::min)(right - 8, tx + c.textWidth(row.title, 14) + 2);

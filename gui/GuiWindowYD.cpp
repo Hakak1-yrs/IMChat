@@ -194,7 +194,7 @@ HWND GuiWindowYD::createEdit(bool multiline, bool password, const std::wstring& 
     HWND edit = CreateWindowExW(0, L"EDIT", L"", style, 0, 0, 10, 10, hwnd_, nullptr, instance_, nullptr);
     SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(editFont_), TRUE);
     SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
-    SendMessageW(edit, EM_SETLIMITTEXT, 250, 0);   // 消息最多 250 个汉字，与业务层的限制一致
+    SendMessageW(edit, EM_SETLIMITTEXT, 250, 0);   // 消息最多 250 个字，与业务层的限制一致
     if (!placeholder.empty() && !multiline)
         SendMessageW(edit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(placeholder.c_str()));
     editColors_[edit] = toColorRef(background);

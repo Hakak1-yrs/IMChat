@@ -293,7 +293,7 @@ bool MainViewYD::onEditKey(HWND edit, int key) {
 bool MainViewYD::onEditChange(HWND edit) {
     if (chat_.onEditChange(edit) || pages_.onEditChange(edit)) return true;
     if (edit != search_) return false;
-    filter_ = UtilYD::trim(GuiTextYD::gbk(GuiTextYD::editText(search_)));
+    filter_ = UtilYD::trim(GuiTextYD::utf8(GuiTextYD::editText(search_)));
     listScroll_ = 0;
     window_.invalidate();
     return true;

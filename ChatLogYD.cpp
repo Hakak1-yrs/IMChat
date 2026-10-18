@@ -13,7 +13,7 @@ void ChatLogYD::append(const std::string& direction, const std::string& peer, co
     const std::string line = DateYD::nowText() + "  " + direction + "  " + peer + "：" + text + "\r\n";
     // 本机演示时两个程序窗口会同时写同一个记录文件。以 FILE_APPEND_DATA 方式打开，由系统保证每次写入
     // 都完整地接在文件末尾，两个窗口的记录不会互相覆盖（普通的追加方式是“先定位到末尾再写”，可能丢行）
-    HANDLE file = CreateFileA(filePath_.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+    HANDLE file = CreateFileW(UtilYD::widen(filePath_).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return;
     DWORD written = 0;
@@ -23,7 +23,7 @@ void ChatLogYD::append(const std::string& direction, const std::string& peer, co
 
 std::vector<std::string> ChatLogYD::query(const std::string& keyword, int count) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::ifstream in(filePath_);
+    std::ifstream in(UtilYD::pathOf(filePath_));
     std::deque<std::string> lines;
     std::string line;
     while (std::getline(in, line)) {

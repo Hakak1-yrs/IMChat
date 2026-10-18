@@ -8,5 +8,5 @@ class DataDirYD {
 public:
     static std::string find();                               // 返回以 \ 结尾的目录
     static std::string absolute(const std::string& dir);     // 完整路径（用于显示）
-    static std::string toNarrow(const std::wstring& text);   // 宽字符路径 → 程序内统一使用的 GBK 字符串
+    static std::string toNarrow(const std::wstring& text);   // 宽字符路径 → 程序内统一使用的 UTF-8 字符串
 };

@@ -5,6 +5,8 @@
 
 namespace {
 const wchar_t* kFontFamily = L"Microsoft YaHei UI";   // 微软雅黑：中文界面的系统字体
+// 表情符号用彩色字体（Segoe UI Emoji）画出彩色图案，不加这个选项只会画成单色轮廓
+const D2D1_DRAW_TEXT_OPTIONS kColorFont = D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT;
 }
 
 bool CanvasYD::init(HWND hwnd, float dpi) {
@@ -151,7 +153,7 @@ void CanvasYD::text(const std::wstring& s, const D2D1_RECT_F& r, float size, con
                                                        : DWRITE_TEXT_ALIGNMENT_LEADING);
     layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     brush_->SetColor(c);
-    target_->DrawTextLayout(D2D1::Point2F(r.left, r.top), layout.Get(), brush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    target_->DrawTextLayout(D2D1::Point2F(r.left, r.top), layout.Get(), brush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP | kColorFont);
 }
 
 void CanvasYD::icon(wchar_t glyph, const D2D1_RECT_F& r, float size, const D2D1_COLOR_F& c) {
@@ -161,7 +163,7 @@ void CanvasYD::icon(wchar_t glyph, const D2D1_RECT_F& r, float size, const D2D1_
     layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     brush_->SetColor(c);
-    target_->DrawTextLayout(D2D1::Point2F(r.left, r.top), layout.Get(), brush_.Get());
+    target_->DrawTextLayout(D2D1::Point2F(r.left, r.top), layout.Get(), brush_.Get(), kColorFont);
 }
 
 float CanvasYD::textWidth(const std::wstring& s, float size, DWRITE_FONT_WEIGHT weight) {
@@ -192,5 +194,5 @@ D2D1_SIZE_F CanvasYD::layoutSize(IDWriteTextLayout* layout) {
 void CanvasYD::drawLayout(IDWriteTextLayout* layout, float x, float y, const D2D1_COLOR_F& c) {
     if (!layout) return;
     brush_->SetColor(c);
-    target_->DrawTextLayout(D2D1::Point2F(x, y), layout, brush_.Get());
+    target_->DrawTextLayout(D2D1::Point2F(x, y), layout, brush_.Get(), kColorFont);
 }

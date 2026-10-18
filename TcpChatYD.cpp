@@ -5,6 +5,7 @@
 #include <atomic>
 #include <iostream>
 #include <thread>
+#include "UtilYD.h"
 
 namespace {
 
@@ -34,7 +35,7 @@ void chatSession(SOCKET sock, const std::string& nickname, ChatLogYD& log, const
     std::string line;
     while (running) {
         std::cout << "> " << std::flush;
-        if (!std::getline(std::cin, line) || !running || line == "/quit") break;
+        if (!UtilYD::getLine(line) || !running || line == "/quit") break;
         if (line.empty()) continue;
         std::string message = "[" + nickname + "] " + line + "\n";
         if (!NetUtilYD::sendAll(sock, message)) {

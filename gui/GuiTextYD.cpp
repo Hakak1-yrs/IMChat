@@ -25,21 +25,9 @@ long long daysFromCivil(int y, int m, int d) {
 
 }  // namespace
 
-std::wstring GuiTextYD::wide(const std::string& gbk) {
-    if (gbk.empty()) return L"";
-    int length = MultiByteToWideChar(936, 0, gbk.data(), static_cast<int>(gbk.size()), nullptr, 0);
-    std::wstring result(length, L'\0');
-    MultiByteToWideChar(936, 0, gbk.data(), static_cast<int>(gbk.size()), &result[0], length);
-    return result;
-}
+std::wstring GuiTextYD::wide(const std::string& utf8) { return UtilYD::widen(utf8); }
 
-std::string GuiTextYD::gbk(const std::wstring& text) {
-    if (text.empty()) return "";
-    int length = WideCharToMultiByte(936, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    std::string result(length, '\0');
-    WideCharToMultiByte(936, 0, text.data(), static_cast<int>(text.size()), &result[0], length, nullptr, nullptr);
-    return result;
-}
+std::string GuiTextYD::utf8(const std::wstring& text) { return UtilYD::narrow(text); }
 
 std::wstring GuiTextYD::editText(HWND edit) {
     int length = GetWindowTextLengthW(edit);

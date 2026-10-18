@@ -192,8 +192,8 @@ bool LoginViewYD::onEditKey(HWND edit, int key) {
 }
 
 void LoginViewYD::submit() {
-    const std::string id = UtilYD::trim(GuiTextYD::gbk(GuiTextYD::editText(account_)));
-    const std::string password = UtilYD::trim(GuiTextYD::gbk(GuiTextYD::editText(password_)));
+    const std::string id = UtilYD::trim(GuiTextYD::utf8(GuiTextYD::editText(account_)));
+    const std::string password = UtilYD::trim(GuiTextYD::utf8(GuiTextYD::editText(password_)));
     std::string msg;
     if (!window_.session().login(service(), id, password, msg)) {
         error_ = GuiTextYD::wide(msg);

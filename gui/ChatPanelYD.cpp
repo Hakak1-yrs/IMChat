@@ -120,7 +120,7 @@ void ChatPanelYD::refresh() {
 }
 
 void ChatPanelYD::send() {
-    const std::string text = UtilYD::lineText(GuiTextYD::gbk(GuiTextYD::editText(input_)));
+    const std::string text = UtilYD::lineText(GuiTextYD::utf8(GuiTextYD::editText(input_)));
     if (text.empty()) return;
     std::string msg;
     if (!window_.session().send(conversation_, text, msg)) {
@@ -250,7 +250,7 @@ bool ChatPanelYD::onEditChange(HWND edit) {
         return true;
     }
     if (edit == search_) {
-        keyword_ = UtilYD::trim(GuiTextYD::gbk(GuiTextYD::editText(search_)));
+        keyword_ = UtilYD::trim(GuiTextYD::utf8(GuiTextYD::editText(search_)));
         rowsDirty_ = true;
         stickBottom_ = true;
         window_.invalidate();
@@ -384,7 +384,7 @@ std::wstring ChatPanelYD::senderName(const std::string& id) const {
 
 bool ChatPanelYD::matches(const MessageYD& m) const {
     if (keyword_.empty()) return true;
-    return UtilYD::containsText(m.text(), keyword_) || UtilYD::containsText(GuiTextYD::gbk(senderName(m.sender())), keyword_);
+    return UtilYD::containsText(m.text(), keyword_) || UtilYD::containsText(GuiTextYD::utf8(senderName(m.sender())), keyword_);
 }
 
 void ChatPanelYD::rebuildRows(CanvasYD& c) {

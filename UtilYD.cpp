@@ -1,8 +1,32 @@
 ﻿#include "UtilYD.h"
+#include <windows.h>
 #include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+
+// 从控制台读一行。控制台输入代码页设为 UTF-8 时，ReadFile（std::cin 走的路径）读中文会得到空字节，
+// 所以控制台用 ReadConsoleW 读 UTF-16 再转 UTF-8；输入被重定向（管道、文件）时照常用 std::getline
+bool UtilYD::getLine(std::string& line) {
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    if (!GetConsoleMode(input, &mode)) {
+        if (!std::getline(std::cin, line)) return false;
+        if (line.compare(0, 3, "\xEF\xBB\xBF") == 0) line.erase(0, 3);   // 重定向的输入文件可能以 BOM 开头
+        return true;
+    }
+    std::wstring text;
+    wchar_t buffer[256];
+    while (text.empty() || text.back() != L'\n') {
+        DWORD count = 0;
+        if (!ReadConsoleW(input, buffer, 256, &count, nullptr) || count == 0) return false;
+        text.append(buffer, count);
+    }
+    if (!text.empty() && text[0] == 0x1A) return false;   // Ctrl+Z 回车：输入结束
+    while (!text.empty() && (text.back() == L'\n' || text.back() == L'\r')) text.pop_back();
+    line = narrow(text);
+    return true;
+}
 
 std::vector<std::string> UtilYD::split(const std::string& s, char sep) {
     std::vector<std::string> result;
@@ -52,7 +76,7 @@ bool UtilYD::removeValue(std::vector<std::string>& v, const std::string& x) {
 std::string UtilYD::readLine(const std::string& prompt) {
     std::cout << prompt;
     std::string line;
-    if (!std::getline(std::cin, line)) {
+    if (!getLine(line)) {
         throw std::runtime_error("输入已结束");   // 由 main 捕获，保证平台对象正常析构并保存数据
     }
     return trim(line);
@@ -90,13 +114,40 @@ std::string UtilYD::lineText(const std::string& s) {
 }
 
 bool UtilYD::containsText(const std::string& text, const std::string& keyword) {
-    if (keyword.empty()) return true;
-    for (size_t i = 0; i + keyword.size() <= text.size();) {
-        if (text.compare(i, keyword.size(), keyword) == 0) return true;
-        // GBK 双字节字符的首字节 >= 0x81：跳过整个字符，保证下一次比较从字符边界开始
-        i += (static_cast<unsigned char>(text[i]) >= 0x81 && i + 1 < text.size()) ? 2 : 1;
+    // UTF-8 是自同步编码：一个字符的字节序列不会出现在另一个字符的中间，直接按字节查找就是按字符查找
+    return text.find(keyword) != std::string::npos;
+}
+
+std::wstring UtilYD::widen(const std::string& utf8) {
+    if (utf8.empty()) return L"";
+    const int length = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    std::wstring result(length, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), &result[0], length);
+    return result;
+}
+
+std::string UtilYD::narrow(const std::wstring& text) {
+    if (text.empty()) return "";
+    const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    std::string result(length, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), &result[0], length, nullptr, nullptr);
+    return result;
+}
+
+std::filesystem::path UtilYD::pathOf(const std::string& utf8) { return std::filesystem::path(widen(utf8)); }
+
+size_t UtilYD::charCount(const std::string& utf8) {
+    // 只数每个字符的首字节；后续字节的形式都是 10xxxxxx
+    return static_cast<size_t>(std::count_if(utf8.begin(), utf8.end(), [](char c) { return (static_cast<unsigned char>(c) & 0xC0) != 0x80; }));
+}
+
+std::string UtilYD::truncate(const std::string& utf8, size_t maxChars) {
+    size_t chars = 0;
+    for (size_t i = 0; i < utf8.size(); ++i) {
+        if ((static_cast<unsigned char>(utf8[i]) & 0xC0) == 0x80) continue;
+        if (chars++ == maxChars) return utf8.substr(0, i) + "…";
     }
-    return false;
+    return utf8;
 }
 
 int UtilYD::readInt(const std::string& prompt, int minValue, int maxValue) {

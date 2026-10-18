@@ -3,36 +3,37 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include "UtilYD.h"
 
 namespace fs = std::filesystem;
 
 namespace {
 
-// 含有非 ASCII 字节、并且整体是合法 UTF-8 的文本，视为 UTF-8。
-// GBK 中文几乎不可能恰好构成合法的 UTF-8 序列，因此不会把正常的 GBK 文件误判为 UTF-8
-bool looksLikeUtf8(const std::string& text) {
-    bool hasNonAscii = std::any_of(text.begin(), text.end(), [](char c) { return static_cast<unsigned char>(c) >= 0x80; });
-    if (!hasNonAscii) return false;
-    return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0) > 0;
+// GBK 中文几乎不可能恰好构成合法的 UTF-8 序列，所以“不是合法 UTF-8”就可以认定是旧版本的 GBK 文件
+bool isValidUtf8(const std::string& text) {
+    return text.empty() ||
+           MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0) > 0;
 }
 
-std::string utf8ToGbk(const std::string& text) {
-    int wideLength = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+std::string gbkToUtf8(const std::string& text) {
+    int wideLength = MultiByteToWideChar(936, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
     std::wstring wide(wideLength, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), &wide[0], wideLength);
-    int length = WideCharToMultiByte(936, 0, wide.data(), wideLength, nullptr, 0, nullptr, nullptr);
+    MultiByteToWideChar(936, 0, text.data(), static_cast<int>(text.size()), &wide[0], wideLength);
+    int length = WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideLength, nullptr, 0, nullptr, nullptr);
     std::string result(length, '\0');
-    WideCharToMultiByte(936, 0, wide.data(), wideLength, &result[0], length, nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideLength, &result[0], length, nullptr, nullptr);
     return result;
 }
 
 }  // namespace
 
 DataFileYD::DataFileYD(const std::string& dataDir, const std::string& fileName)
-    : path_(fs::path(dataDir) / fileName), tempPath_(fs::path(dataDir) / (fileName + ".tmp")), fileName_(fileName) {}
+    : path_(UtilYD::pathOf(dataDir) / UtilYD::pathOf(fileName)),
+      tempPath_(UtilYD::pathOf(dataDir) / UtilYD::pathOf(fileName + ".tmp")),
+      fileName_(fileName) {}
 
 bool DataFileYD::read(std::string& text) {
-    convertedFromUtf8_ = false;
+    convertedFromGbk_ = false;
     std::ifstream in(path_, std::ios::binary);
     if (!in) {
         existed_ = false;
@@ -43,13 +44,13 @@ bool DataFileYD::read(std::string& text) {
     std::ostringstream buffer;
     buffer << in.rdbuf();
     text = buffer.str();
-    // 记事本、VS Code 等编辑器可能把文件另存为 UTF-8：去掉 BOM 并转换为 GBK，避免中文变成乱码
+    // 记事本等编辑器保存时可能加上 BOM，去掉即可；旧版本程序写的 GBK 文件转换成 UTF-8
     bool bom = text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
                static_cast<unsigned char>(text[1]) == 0xBB && static_cast<unsigned char>(text[2]) == 0xBF;
     if (bom) text.erase(0, 3);
-    if (bom || looksLikeUtf8(text)) {
-        text = utf8ToGbk(text);
-        convertedFromUtf8_ = true;
+    if (!isValidUtf8(text)) {
+        text = gbkToUtf8(text);
+        convertedFromGbk_ = true;
     }
     // 统一换行符：记事本或旧版本程序写出的 \r\n 与程序生成的 \n 视为相同内容，
     // 避免“内容其实没变”却被判定为已修改
@@ -61,10 +62,10 @@ bool DataFileYD::read(std::string& text) {
     return true;
 }
 
-bool DataFileYD::convertedFromUtf8() const { return convertedFromUtf8_; }
+bool DataFileYD::convertedFromGbk() const { return convertedFromGbk_; }
 
 bool DataFileYD::hasChanges(const std::string& text) const {
-    return !existed_ || convertedFromUtf8_ || text != snapshot_;
+    return !existed_ || convertedFromGbk_ || text != snapshot_;
 }
 
 bool DataFileYD::modifiedOutside() const {
@@ -86,7 +87,7 @@ bool DataFileYD::adoptIfSame(const std::string& text) {
     if (disk != text) return false;
     snapshot_ = text;   // 文件里已经是本窗口要写的内容（另一个窗口做了同样的修改），记下来，不必再写
     existed_ = true;
-    convertedFromUtf8_ = false;
+    convertedFromGbk_ = false;
     std::error_code ec;
     stamp_ = fs::last_write_time(path_, ec);
     return true;
@@ -118,7 +119,7 @@ bool DataFileYD::commit() {
     }
     snapshot_ = prepared_;
     existed_ = true;
-    convertedFromUtf8_ = false;
+    convertedFromGbk_ = false;
     std::error_code ec;
     stamp_ = fs::last_write_time(path_, ec);
     return true;
@@ -131,8 +132,8 @@ void DataFileYD::discard() {
 
 bool DataFileYD::saveCopy(const std::string& dir, const std::string& text) const {
     std::error_code ec;
-    fs::create_directories(dir, ec);
-    std::ofstream copy(fs::path(dir) / fileName_, std::ios::binary | std::ios::trunc);
+    fs::create_directories(UtilYD::pathOf(dir), ec);
+    std::ofstream copy(UtilYD::pathOf(dir) / UtilYD::pathOf(fileName_), std::ios::binary | std::ios::trunc);
     copy << text;
     copy.flush();
     return static_cast<bool>(copy);
@@ -141,8 +142,8 @@ bool DataFileYD::saveCopy(const std::string& dir, const std::string& text) const
 bool DataFileYD::copyTo(const std::string& dir) const {
     std::error_code ec;
     if (!fs::exists(path_, ec)) return true;
-    fs::create_directories(dir, ec);
-    return fs::copy_file(path_, fs::path(dir) / fileName_, fs::copy_options::overwrite_existing, ec);
+    fs::create_directories(UtilYD::pathOf(dir), ec);
+    return fs::copy_file(path_, UtilYD::pathOf(dir) / UtilYD::pathOf(fileName_), fs::copy_options::overwrite_existing, ec);
 }
 
 const std::string& DataFileYD::fileName() const { return fileName_; }

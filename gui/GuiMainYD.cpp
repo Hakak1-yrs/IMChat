@@ -48,8 +48,8 @@ int WINAPI wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE, _In_ PWSTR, _In
             LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
             ServiceTypeYD type;
             if (argv && argc >= 5 && std::wstring(argv[1]) == L"--login" &&
-                ServiceTypeHelperYD::parse(GuiTextYD::gbk(argv[2]), type))
-                window.autoLogin(type, GuiTextYD::gbk(argv[3]), GuiTextYD::gbk(argv[4]));
+                ServiceTypeHelperYD::parse(GuiTextYD::utf8(argv[2]), type))
+                window.autoLogin(type, GuiTextYD::utf8(argv[3]), GuiTextYD::utf8(argv[4]));
             if (argv) LocalFree(argv);
             code = window.run();
         }
