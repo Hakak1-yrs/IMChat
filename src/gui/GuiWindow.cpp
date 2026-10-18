@@ -26,7 +26,7 @@ COLORREF toColorRef(unsigned hex) { return RGB((hex >> 16) & 0xFF, (hex >> 8) & 
 }  // namespace
 
 GuiWindow::GuiWindow(HINSTANCE instance, Platform& platform)
-    : instance_(instance), platform_(platform), session_(platform) {}
+    : instance_(instance), platform_(platform), local_(platform) {}
 
 GuiWindow::~GuiWindow() {
     for (auto& kv : brushes_) DeleteObject(kv.second);
@@ -82,7 +82,7 @@ void GuiWindow::showMain() { switchTo(main_.get()); }
 
 bool GuiWindow::autoLogin(ServiceType type, const std::string& id, const std::string& password) {
     std::string msg;
-    if (!session_.login(type, id, password, msg)) return false;
+    if (!local_.login(type, id, password, msg)) return false;
     showMain();
     if (!msg.empty()) main_->toast(GuiText::wide(msg));
     return true;
@@ -179,7 +179,15 @@ float GuiWindow::scale() const { return dpi_ / 96.0f; }
 
 Canvas& GuiWindow::canvas() { return canvas_; }
 
-Session& GuiWindow::session() { return session_; }
+Session& GuiWindow::session() { return remote_ ? static_cast<Session&>(*remote_) : static_cast<Session&>(local_); }
+
+LocalSession& GuiWindow::localSession() { return local_; }
+
+RemoteSession* GuiWindow::remoteSession() { return remote_.get(); }
+
+void GuiWindow::startRemote(std::unique_ptr<RemoteSession> session) { remote_ = std::move(session); }
+
+void GuiWindow::endRemote() { remote_.reset(); }
 
 Platform& GuiWindow::platform() { return platform_; }
 

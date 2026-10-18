@@ -42,7 +42,7 @@ target_link_libraries(IMChatConsole PRIVATE imchat_net)
 file(GLOB GUI_SOURCES CONFIGURE_DEPENDS src/gui/*.cpp src/gui/*.h)
 add_executable(IMChatClient WIN32 ${GUI_SOURCES})
 target_compile_definitions(IMChatClient PRIVATE NOMINMAX)
-target_link_libraries(IMChatClient PRIVATE imchat_net d2d1 dwrite comctl32 dwmapi shell32)
+target_link_libraries(IMChatClient PRIVATE imchat_net imchat_client d2d1 dwrite comctl32 dwmapi shell32)
 
 # ---- protocol: frame codec and JSON packets (portable) ----
 file(GLOB PROTOCOL_SOURCES CONFIGURE_DEPENDS src/protocol/*.cpp src/protocol/*.h)

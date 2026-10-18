@@ -210,7 +210,7 @@ void Dialog::paint(Canvas& c) {
     beginHits();
     const Session& session = window_.session();
     const D2D1_COLOR_F accent =
-        session.loggedIn() ? Theme::accent(session.current()->type()) : Theme::accent(ServiceType::QQ);
+        session.loggedIn() ? Theme::accent(session.me().type) : Theme::accent(ServiceType::QQ);
     c.fillRect(bounds_, Theme::rgb(0x0F1115, 0.32f));
     c.shadow(card_, 18, 24, 0.16f);
     c.fillRound(card_, 18, Theme::rgb(Theme::PANEL));

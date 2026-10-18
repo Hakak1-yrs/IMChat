@@ -12,7 +12,7 @@ FriendPage::FriendPage(GuiWindow& window, const std::string& peerId) : Page(wind
 std::string FriendPage::key() const { return "P:" + peerId_; }
 
 void FriendPage::addFriendDialog(GuiWindow& window) {
-    ServiceBase& m = *window.session().current();
+    ServiceBase& m = *window.localSession().current();
     auto dialog = std::make_unique<Dialog>(window, L"添加" + GuiText::wide(m.serviceName()) + L"好友");
     dialog->message(L"对方开启了好友验证时，需要对方同意后才能成为好友。")
         .field(L"对方账号", L"", GuiText::wide(m.serviceName() + "中的账号"))
@@ -25,7 +25,7 @@ void FriendPage::addFriendDialog(GuiWindow& window) {
                 return false;
             }
             std::string msg;
-            ServiceBase& me = *window.session().current();
+            ServiceBase& me = *window.localSession().current();
             if (!window.platform().requestFriend(me, id, d.text(1), d.text(2), msg)) {
                 d.setError(GuiText::wide(msg));
                 return false;

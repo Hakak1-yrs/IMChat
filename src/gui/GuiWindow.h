@@ -8,7 +8,8 @@
 #include <string>
 #include <vector>
 #include "Canvas.h"
-#include "Session.h"
+#include "LocalSession.h"
+#include "RemoteSession.h"
 
 class View;
 class Dialog;
@@ -30,6 +31,9 @@ public:
     void showMain();
     // 演示用：启动参数 --login 服务 账号 密码 时直接登录（方便同时打开几个窗口演示多人聊天）
     bool autoLogin(ServiceType type, const std::string& id, const std::string& password);
+    // 联网模式：登录页创建 RemoteSession 并开始连接，连接、登录、加载数据完成后由登录页切换到主界面
+    void startRemote(std::unique_ptr<RemoteSession> session);
+    void endRemote();                            // 退出联网模式（退出登录、登录失败、被挤下线）
 
     void invalidate();
     void submitLoginLater();                     // 回车登录：放到消息循环里执行（登录成功会销毁正在处理按键的输入框）
@@ -44,7 +48,9 @@ public:
     HWND hwnd() const;
     float scale() const;                         // 当前 DPI / 96
     Canvas& canvas();
-    Session& session();
+    Session& session();                          // 当前使用的会话：联网模式为 RemoteSession，否则为 LocalSession
+    LocalSession& localSession();                // 单机模式的会话（只在单机模式下开放的功能页使用）
+    RemoteSession* remoteSession();              // 联网模式下的会话，单机模式为空
     Platform& platform();
     MainView& mainView();
     LoginView& loginView();
@@ -68,7 +74,8 @@ private:
     HINSTANCE instance_;
     HWND hwnd_ = nullptr;
     Platform& platform_;
-    Session session_;
+    LocalSession local_;
+    std::unique_ptr<RemoteSession> remote_;
     Canvas canvas_;
     float dpi_ = 96.0f;
     HFONT editFont_ = nullptr;

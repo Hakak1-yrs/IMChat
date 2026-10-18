@@ -101,11 +101,21 @@ void ChatPanel::refresh() {
     if (!open_) return;
     Session& session = window_.session();
     std::vector<Message> list = session.messages(conversation_);
+    std::vector<PendingView> pending = session.pending(conversation_);
+    const int peerRead = session.peerReadSeq(conversation_);
     const int last = list.empty() ? 0 : list.back().seq();
     size_t revoked = 0;   // 撤回不会增加消息条数，单独统计，撤回后也能及时刷新
     for (const Message& m : list) revoked += m.revoked() ? 1 : 0;
-    if (last != lastSeq_ || list.size() != messages_.size() || revoked != revokedCount_) {
+    size_t failed = 0;    // 待确认的消息变成“发送失败”时条数不变，也单独统计
+    for (const PendingView& p : pending) failed += p.failed ? 1 : 0;
+    size_t pendingFailed = 0;
+    for (const PendingView& p : pending_) pendingFailed += p.failed ? 1 : 0;
+    if (last != lastSeq_ || list.size() != messages_.size() || revoked != revokedCount_ || pending.size() != pending_.size() ||
+        failed != pendingFailed || peerRead != peerRead_) {
+        if (pending.size() > pending_.size()) stickBottom_ = true;   // 自己刚发了消息：滚到最底部
         messages_ = std::move(list);
+        pending_ = std::move(pending);
+        peerRead_ = peerRead;
         lastSeq_ = last;
         revokedCount_ = revoked;
         rowsDirty_ = true;
@@ -136,21 +146,19 @@ void ChatPanel::send() {
 }
 
 void ChatPanel::mention() {
-    Group* g = window_.session().groupOf(conversation_);
+    const std::optional<GroupView> g = window_.session().group(conversation_);
     if (!g || !input_) return;
-    Platform& platform = window_.session().platform();
-    const std::string me = window_.session().current()->id();
+    const std::string me = window_.session().me().id;
     std::vector<std::string> names;
     std::vector<std::wstring> items;
-    if (g->policy().canEditInfo(*g, me)) {   // 群主（QQ 群模式下还有管理员）可以 @所有人
+    if (g->canMentionAll) {   // 群主（QQ 群模式下还有管理员）可以 @所有人
         names.push_back("所有人");
         items.push_back(L"所有人");
     }
-    for (const std::string& id : g->members()) {
-        if (id == me) continue;
-        ServiceBase* acc = platform.findAccount(g->service(), id);
-        names.push_back(acc ? acc->nickname() : id);
-        items.push_back(GuiText::wide(platform.displayName(g->service(), id)));
+    for (const MemberView& member : g->members) {
+        if (member.id == me) continue;
+        names.push_back(member.nickname);
+        items.push_back(GuiText::wide(member.nickname + "（" + member.id + "）"));
     }
     auto dialog = std::make_unique<Dialog>(window_, L"选择要提醒的人");
     dialog->pick(L"群成员（可多选）", items, true).primary(L"插入", [this, names](Dialog& d) {
@@ -190,9 +198,13 @@ void ChatPanel::onAction(int action, int index) {
         mention();
         return;
     case ACT_REVOKE: {
-        std::string msg;
-        if (!window_.session().platform().revokeMessage(*window_.session().current(), index, msg))
-            window_.mainView().toast(GuiText::wide(msg));
+        if (const Message* m = findMessage(index)) {
+            const Message message = *m;   // refresh 会替换 messages_，先复制一份
+            window_.session().revoke(message);
+        }
+        // 单机模式立即有结果；联网模式的结果随服务端响应到达，由主界面的定时器刷新并提示
+        const std::string notice = window_.session().takeNotice();
+        if (!notice.empty()) window_.mainView().toast(GuiText::wide(notice));
         refresh();
         window_.mainView().reload();
         return;
@@ -205,8 +217,7 @@ void ChatPanel::onAction(int action, int index) {
         return;
     case ACT_AT_SENDER:   // 把“@昵称 ”插入输入框
         if (const Message* m = findMessage(index)) {
-            ServiceBase* acc = window_.session().platform().findAccount(m->service(), m->sender());
-            const std::wstring text = L"@" + GuiText::wide(acc ? acc->nickname() : m->sender()) + L" ";
+            const std::wstring text = L"@" + GuiText::wide(window_.session().nicknameOf(m->sender())) + L" ";
             SendMessageW(input_, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(text.c_str()));
             SetFocus(input_);
         }
@@ -276,7 +287,18 @@ void ChatPanel::onWheel(float x, float y, float delta) {
 
 float ChatPanel::contentRight() const { return drawer_ ? bounds_.right - kDrawerWidth : bounds_.right; }
 
-int ChatPanel::iconCount() const { return conversation_.isGroup ? 4 : 3; }
+std::vector<int> ChatPanel::headerActions() const {
+    // 实时群聊室、群设置 / 好友资料页都直接操作本地业务数据，联网模式下暂不提供
+    const bool local = !window_.session().isRemote();
+    std::vector<int> actions;
+    if (conversation_.isGroup && local) actions.push_back(ACT_ROOM);
+    actions.push_back(ACT_SEARCH);
+    if (local) actions.push_back(ACT_SETTINGS);
+    actions.push_back(ACT_INFO);
+    return actions;
+}
+
+int ChatPanel::iconCount() const { return static_cast<int>(headerActions().size()); }
 
 float ChatPanel::iconsLeft() const { return bounds_.right - 24 - iconCount() * 36.0f - (iconCount() - 1) * 8.0f; }
 
@@ -322,7 +344,8 @@ void ChatPanel::onClick(float x, float y) {
 void ChatPanel::onRightClick(float x, float y) {
     menuSeq_ = -1;
     const int row = open_ ? rowAt(x, y) : -1;
-    if (row >= 0 && rows_[row].kind != ROW_TIME && rows_[row].kind != ROW_SYSTEM) {   // 系统提示、撤回提示没有菜单
+    // 系统提示、撤回提示、还没发出去的消息没有菜单
+    if (row >= 0 && rows_[row].kind != ROW_TIME && rows_[row].kind != ROW_SYSTEM && rows_[row].kind != ROW_PENDING) {
         menuSeq_ = messages_[rows_[row].message].seq();
         menuX_ = x;
         menuY_ = y;
@@ -346,8 +369,8 @@ const Message* ChatPanel::findMessage(int seq) const {
 std::vector<ChatPanel::MenuItem> ChatPanel::menuItems(const Message& m) const {
     Session& session = window_.session();
     std::vector<MenuItem> items{ { L"复制", ACT_COPY, false } };
-    if (conversation_.isGroup && canSend_ && m.sender() != session.current()->id()) items.push_back({ L"@TA", ACT_AT_SENDER, false });
-    if (session.platform().canRevoke(*session.current(), m)) items.push_back({ L"撤回", ACT_REVOKE, true });
+    if (conversation_.isGroup && canSend_ && m.sender() != session.me().id) items.push_back({ L"@TA", ACT_AT_SENDER, false });
+    if (session.canRevoke(m)) items.push_back({ L"撤回", ACT_REVOKE, true });
     return items;
 }
 
@@ -377,10 +400,7 @@ void ChatPanel::placeEdits() {
 
 // ======================== 消息排版 ========================
 
-std::wstring ChatPanel::senderName(const std::string& id) const {
-    ServiceBase* acc = window_.session().platform().findAccount(window_.session().current()->type(), id);
-    return GuiText::wide(acc ? acc->nickname() : id);
-}
+std::wstring ChatPanel::senderName(const std::string& id) const { return GuiText::wide(window_.session().nicknameOf(id)); }
 
 bool ChatPanel::matches(const Message& m) const {
     if (keyword_.empty()) return true;
@@ -391,7 +411,7 @@ void ChatPanel::rebuildRows(Canvas& c) {
     const D2D1_RECT_F area = messageArea();
     const float width = area.right - area.left;
     const float maxBubble = (std::min)(540.0f, width * 0.70f);
-    const std::string& me = window_.session().current()->id();
+    const std::string me = window_.session().me().id;
     rows_.clear();
     matchCount_ = 0;
     float y = 24;
@@ -409,7 +429,7 @@ void ChatPanel::rebuildRows(Canvas& c) {
         Row row{ ROW_OTHER, i, y, 0, 0, 0, 0, nullptr, L"" };
         if (m.isSystem() || m.revoked()) {   // 系统提示、撤回提示：居中的灰色小字
             row.kind = ROW_SYSTEM;
-            const std::string text = m.revoked() ? window_.session().platform().revokeText(*window_.session().current(), m) : m.text();
+            const std::string text = m.revoked() ? window_.session().revokeText(m) : m.text();
             row.layout = c.wrapLayout(GuiText::wide(text), 12, width * 0.7f);
             const D2D1_SIZE_F size = Canvas::layoutSize(row.layout.Get());
             row.bubbleWidth = size.width + 20;
@@ -431,6 +451,18 @@ void ChatPanel::rebuildRows(Canvas& c) {
         }
         rows_.push_back(row);
         y += row.height + 16;
+    }
+    if (keyword_.empty()) {   // 还在等服务端确认的消息排在最后（查找聊天记录时不显示）
+        for (size_t i = 0; i < pending_.size(); ++i) {
+            Row row{ ROW_PENDING, i, y, 0, 0, 0, 0, nullptr, L"" };
+            row.layout = c.wrapLayout(GuiText::wide(pending_[i].text), 14.5f, maxBubble - 28);
+            const D2D1_SIZE_F size = Canvas::layoutSize(row.layout.Get());
+            row.bubbleWidth = (std::max)(size.width + 28, 44.0f);
+            row.bubbleHeight = size.height + 20;
+            row.height = (std::max)(40.0f, row.bubbleHeight) + (pending_[i].failed ? 20.0f : 0.0f);   // 失败时下方显示原因
+            rows_.push_back(row);
+            y += row.height + 16;
+        }
     }
     contentHeight_ = y + 8;
     rowsWidth_ = width;
@@ -460,12 +492,12 @@ void ChatPanel::paint(Canvas& c) {
 void ChatPanel::paintEmpty(Canvas& c) {
     const float cx = (bounds_.left + bounds_.right) / 2, cy = (bounds_.top + bounds_.bottom) / 2 - 30;
     c.fillCircle(cx, cy - 20, 52, Theme::rgb(0xFFFFFF));
-    c.icon(kIconChat, D2D1::RectF(cx - 40, cy - 60, cx + 40, cy + 20), 40,
-           Theme::accent(window_.session().current()->type()));
+    c.icon(kIconChat, D2D1::RectF(cx - 40, cy - 60, cx + 40, cy + 20), 40, Theme::accent(window_.session().me().type));
     c.text(L"选择一个会话，开始聊天", D2D1::RectF(bounds_.left, cy + 50, bounds_.right, cy + 76), 16,
            Theme::rgb(Theme::TEXT2), Align::CENTER);
-    c.text(L"消息实时同步 —— 再打开一个窗口登录好友的账号试试", D2D1::RectF(bounds_.left, cy + 80, bounds_.right, cy + 100), 12.5f,
-           Theme::rgb(Theme::TEXT3), Align::CENTER);
+    const wchar_t* hint = window_.session().isRemote() ? L"联网模式 —— 消息经服务器实时送达，断线期间发的消息会在重连后自动补发"
+                                                       : L"消息实时同步 —— 再打开一个窗口登录好友的账号试试";
+    c.text(hint, D2D1::RectF(bounds_.left, cy + 80, bounds_.right, cy + 100), 12.5f, Theme::rgb(Theme::TEXT3), Align::CENTER);
 }
 
 void ChatPanel::paintHeader(Canvas& c) {
@@ -473,29 +505,21 @@ void ChatPanel::paintHeader(Canvas& c) {
     Session& session = window_.session();
     c.fillRect(h, Theme::rgb(Theme::PANEL));
     c.line(h.left, h.bottom - 0.5f, h.right, h.bottom - 0.5f, Theme::rgb(Theme::BORDER));
-    const D2D1_COLOR_F accent = Theme::accent(session.current()->type());
+    const D2D1_COLOR_F accent = Theme::accent(session.me().type);
 
     // 右侧图标按钮（从左到右）：实时群聊室（仅群聊）、查找聊天记录、群设置/好友资料、资料抽屉
     const float iconTop = h.top + 14;
-    struct Icon {
-        wchar_t glyph;
-        int action;
-        bool active;
-    };
-    std::vector<Icon> icons;
-    if (conversation_.isGroup) icons.push_back({ kIconRoom, ACT_ROOM, false });
-    icons.push_back({ kIconSearch, ACT_SEARCH, searching_ });
-    icons.push_back({ kIconSettings, ACT_SETTINGS, false });
-    icons.push_back({ kIconInfo, ACT_INFO, drawer_ });
     float x = iconsLeft();
-    for (const Icon& icon : icons) {
+    for (int action : headerActions()) {
+        const wchar_t glyph = action == ACT_ROOM ? kIconRoom : action == ACT_SEARCH ? kIconSearch : action == ACT_SETTINGS ? kIconSettings : kIconInfo;
+        const bool active = (action == ACT_SEARCH && searching_) || (action == ACT_INFO && drawer_);
         const D2D1_RECT_F button = D2D1::RectF(x, iconTop, x + 36, iconTop + 36);
         D2D1_COLOR_F tint = accent;
         tint.a = 0.10f;
-        if (icon.active) c.fillRound(button, 10, tint);
+        if (active) c.fillRound(button, 10, tint);
         else if (hovered(button)) c.fillRound(button, 10, Theme::rgb(Theme::FIELD));
-        c.icon(icon.glyph, button, 16, icon.active ? accent : Theme::rgb(Theme::TEXT2));
-        addHit(button, icon.action);
+        c.icon(glyph, button, 16, active ? accent : Theme::rgb(Theme::TEXT2));
+        addHit(button, action);
         x += 36 + 8;
     }
 
@@ -509,11 +533,13 @@ void ChatPanel::paintHeader(Canvas& c) {
 
     std::wstring subtitle;
     if (conversation_.isGroup) {
-        Group* g = session.groupOf(conversation_);
+        const std::optional<GroupView> g = session.group(conversation_);
         subtitle = L"群号 " + std::to_wstring(conversation_.groupNo);
-        if (g) subtitle += L" · " + std::to_wstring(g->members().size()) + L" 人 · " + GuiText::wide(g->policy().modeName());
+        if (g) subtitle += L" · " + std::to_wstring(g->members.size()) + L" 人 · " + GuiText::wide(g->modeName);
     } else {
-        subtitle = Theme::shortName(session.current()->type()) + L" " + GuiText::wide(conversation_.peerId);
+        subtitle = Theme::shortName(session.me().type) + L" " + GuiText::wide(conversation_.peerId);
+        const ProfileView peer = session.profile(conversation_.peerId);
+        if (peer.showOnline) subtitle += peer.online ? L" · 在线" : L" · 离线";
     }
     if (!keyword_.empty()) subtitle = L"找到 " + std::to_wstring(matchCount_) + L" 条相关记录";
     c.text(GuiText::wide(session.titleOf(conversation_)), D2D1::RectF(h.left + 28, h.top + 11, titleRight, h.top + 36), 17,
@@ -523,15 +549,14 @@ void ChatPanel::paintHeader(Canvas& c) {
 }
 
 void ChatPanel::paintAvatar(Canvas& c, float cx, float cy, float radius, const std::string& id) {
-    ServiceBase* acc = window_.session().platform().findAccount(window_.session().current()->type(), id);
     c.fillCircle(cx, cy, radius, Theme::avatar(id));
-    c.text(GuiText::initial(acc ? acc->nickname() : id), D2D1::RectF(cx - radius, cy - radius, cx + radius, cy + radius),
+    c.text(GuiText::initial(window_.session().nicknameOf(id)), D2D1::RectF(cx - radius, cy - radius, cx + radius, cy + radius),
            radius * 0.78f, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
 }
 
 void ChatPanel::paintMessages(Canvas& c) {
     const D2D1_RECT_F area = messageArea();
-    const D2D1_COLOR_F accent = Theme::accent(window_.session().current()->type());
+    const D2D1_COLOR_F accent = Theme::accent(window_.session().me().type);
     c.pushClip(area);
     if (rows_.empty()) {
         c.text(keyword_.empty() ? L"还没有消息，打个招呼吧" : L"没有找到相关的聊天记录",
@@ -539,11 +564,31 @@ void ChatPanel::paintMessages(Canvas& c) {
     }
     const float base = area.top - scroll_;
     Session& session = window_.session();
-    Platform& platform = session.platform();
-    const Group* group = session.groupOf(conversation_);
     for (const Row& row : rows_) {
         const float top = base + row.top;
         if (top + row.height < area.top || top > area.bottom) continue;   // 只画看得见的部分
+        if (row.kind == ROW_PENDING) {   // 还在等确认：半透明气泡 + “发送中”；被拒绝：红色感叹号 + 原因
+            const PendingView& p = pending_[row.message];
+            paintAvatar(c, area.right - 28 - 20, top + 20, 20, session.me().id);
+            const float right = area.right - 80;
+            const D2D1_RECT_F bubble = D2D1::RectF(right - row.bubbleWidth, top, right, top + row.bubbleHeight);
+            D2D1_COLOR_F fill = accent;
+            fill.a = p.failed ? 0.35f : 0.55f;
+            c.fillRound(bubble, 12, fill);
+            c.drawLayout(row.layout.Get(), bubble.left + 14, bubble.top + 10, Theme::rgb(0xFFFFFF));
+            const float cy = (bubble.top + bubble.bottom) / 2;
+            if (p.failed) {
+                c.fillCircle(bubble.left - 16, cy, 9, Theme::rgb(Theme::DANGER));
+                c.text(L"!", D2D1::RectF(bubble.left - 25, cy - 9, bubble.left - 7, cy + 9), 12, Theme::rgb(0xFFFFFF), Align::CENTER,
+                       DWRITE_FONT_WEIGHT_BOLD);
+                c.text(L"发送失败：" + GuiText::wide(p.error), D2D1::RectF(area.left + 80, bubble.bottom + 2, right, bubble.bottom + 20), 11.5f,
+                       Theme::rgb(Theme::DANGER), Align::RIGHT);
+            } else {
+                c.text(L"发送中", D2D1::RectF(bubble.left - 60, cy - 9, bubble.left - 8, cy + 9), 11.5f, Theme::rgb(Theme::TEXT4),
+                       Align::RIGHT);
+            }
+            continue;
+        }
         const Message& m = messages_[row.message];
         switch (row.kind) {
         case ROW_TIME:
@@ -576,7 +621,7 @@ void ChatPanel::paintMessages(Canvas& c) {
             if (row.nameHeight > 0) {
                 const std::wstring name = senderName(m.sender());
                 c.text(name, D2D1::RectF(x + 2, top, x + 300, top + 16), 12, Theme::rgb(Theme::TEXT3));
-                if (group && Util::contains(platform.mentionsOf(*group, m), session.current()->id())) {   // 这条消息 @了我
+                if (session.mentionsMe(m)) {   // 这条消息 @了我
                     const float nx = x + 2 + c.textWidth(name, 12) + 6;
                     c.text(L"@了你", D2D1::RectF(nx, top, nx + 60, top + 16), 12, accent, Align::LEFT, DWRITE_FONT_WEIGHT_SEMI_BOLD);
                 }
@@ -593,8 +638,15 @@ void ChatPanel::paintMessages(Canvas& c) {
             const D2D1_RECT_F bubble = D2D1::RectF(right - row.bubbleWidth, top, right, top + row.bubbleHeight);
             c.fillRound(bubble, 12, accent);
             c.drawLayout(row.layout.Get(), bubble.left + 14, bubble.top + 10, Theme::rgb(0xFFFFFF));
+            if (!conversation_.isGroup) {   // 与 QQ 相同：私信中自己的每条消息旁显示对方是否已读
+                const bool read = m.seq() <= peerRead_;
+                c.text(read ? L"已读" : L"未读", D2D1::RectF(bubble.left - 50, bubble.bottom - 18, bubble.left - 8, bubble.bottom), 11.5f,
+                       read ? Theme::rgb(Theme::TEXT4) : accent, Align::RIGHT);
+            }
             break;
         }
+        case ROW_PENDING:
+            break;
         }
     }
     // 细滚动条
@@ -621,7 +673,7 @@ void ChatPanel::paintInput(Canvas& c) {
         c.text(text, D2D1::RectF(cx - w / 2 + 26, cy - 12, cx + w / 2 + 4, cy + 12), 13, Theme::rgb(Theme::TEXT3));
         return;
     }
-    const D2D1_COLOR_F accent = Theme::accent(window_.session().current()->type());
+    const D2D1_COLOR_F accent = Theme::accent(window_.session().me().type);
     if (conversation_.isGroup) {   // 工具栏：@ 提醒
         const D2D1_RECT_F at = D2D1::RectF(r.left + 24, r.top + 12, r.left + 24 + 84, r.top + 40);
         if (hovered(at)) c.fillRound(at, 8, Theme::rgb(Theme::FIELD));
@@ -683,9 +735,8 @@ float ChatPanel::paintTag(Canvas& c, float right, float cy, const std::wstring& 
 void ChatPanel::paintDrawer(Canvas& c) {
     const D2D1_RECT_F r = drawerArea();
     Session& session = window_.session();
-    Platform& platform = session.platform();
-    ServiceBase* me = session.current();
-    const ServiceType type = me->type();
+    const AccountView me = session.me();
+    const ServiceType type = me.type;
     const D2D1_COLOR_F accent = Theme::accent(type);
     c.fillRect(r, Theme::rgb(Theme::PANEL));
     c.line(r.left + 0.5f, r.top, r.left + 0.5f, r.bottom, Theme::rgb(Theme::BORDER));
@@ -705,8 +756,12 @@ void ChatPanel::paintDrawer(Canvas& c) {
     };
 
     if (!conversation_.isGroup) {
-        ServiceBase* other = platform.findAccount(type, conversation_.peerId);
+        const ProfileView other = session.profile(conversation_.peerId);
         paintAvatar(c, cx, y + 36, 36, conversation_.peerId);
+        if (other.showOnline) {   // 联网模式：头像右下角的在线状态
+            c.fillCircle(cx + 26, y + 62, 8, Theme::rgb(Theme::PANEL));
+            c.fillCircle(cx + 26, y + 62, 6, Theme::rgb(other.online ? 0x23C343 : 0xC2C7D0));
+        }
         y += 84;
         c.text(GuiText::wide(session.titleOf(conversation_)), D2D1::RectF(left, y, right, y + 26), 17,
                Theme::rgb(Theme::TEXT), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
@@ -714,56 +769,56 @@ void ChatPanel::paintDrawer(Canvas& c) {
         c.text(Theme::shortName(type) + L" " + GuiText::wide(conversation_.peerId), D2D1::RectF(left, y, right, y + 18), 12.5f,
                Theme::rgb(Theme::TEXT3), Align::CENTER);
         y += 22;
-        if (other) {
+        if (other.known) {
             section(L"资料");
-            field(L"昵称", GuiText::wide(other->nickname()));
-            field(L"所在地", GuiText::wide(other->location()));
-            field(L"生日", GuiText::wide(other->birthday().toString()));
-            field(L"T龄", std::to_wstring(other->tAge()) + L" 年");
-            std::vector<std::string> mutual = platform.mutualFriends(*me, *other);
-            section(L"共同好友 · " + std::to_wstring(mutual.size()));
-            if (mutual.empty()) {
+            field(L"昵称", GuiText::wide(other.nickname));
+            if (other.showOnline) field(L"状态", other.online ? L"在线" : L"离线");
+            field(L"所在地", GuiText::wide(other.location));
+            field(L"生日", GuiText::wide(other.birthday));
+            field(L"T龄", std::to_wstring(other.tAge) + L" 年");
+            section(L"共同好友 · " + std::to_wstring(other.mutualFriends.size()));
+            if (other.mutualFriends.empty()) {
                 c.text(L"暂无", D2D1::RectF(left, y, right, y + 20), 13, Theme::rgb(Theme::TEXT4));
                 y += 28;
             }
-            for (const std::string& id : mutual) {
+            for (const std::string& id : other.mutualFriends) {
                 paintAvatar(c, left + 14, y + 14, 14, id);
                 c.text(senderName(id), D2D1::RectF(left + 38, y, right, y + 28), 13, Theme::rgb(Theme::TEXT));
                 y += 38;
             }
         }
-    } else if (Group* g = session.groupOf(conversation_)) {
-        const GroupPolicy& policy = g->policy();
+    } else if (const std::optional<GroupView> g = session.group(conversation_)) {
         const D2D1_RECT_F logo = D2D1::RectF(cx - 36, y, cx + 36, y + 72);
-        c.fillRound(logo, 20, Theme::avatar("G" + std::to_string(g->groupNo())));
-        c.text(GuiText::initial(g->name()), logo, 28, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+        c.fillRound(logo, 20, Theme::avatar("G" + std::to_string(g->groupNo)));
+        c.text(GuiText::initial(g->name), logo, 28, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
         y += 84;
-        c.text(GuiText::wide(g->name()), D2D1::RectF(left, y, right, y + 26), 17, Theme::rgb(Theme::TEXT),
+        c.text(GuiText::wide(g->name), D2D1::RectF(left, y, right, y + 26), 17, Theme::rgb(Theme::TEXT),
                Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
         y += 28;
-        c.text(L"群号 " + std::to_wstring(g->groupNo()) + L" · " + GuiText::wide(policy.modeName()),
+        c.text(L"群号 " + std::to_wstring(g->groupNo) + L" · " + GuiText::wide(g->modeName),
                D2D1::RectF(left, y, right, y + 18), 12.5f, Theme::rgb(Theme::TEXT3), Align::CENTER);
         y += 22;
         section(L"群公告");
-        if (g->notice().empty()) {
+        if (g->notice.empty()) {
             c.text(L"暂无公告", D2D1::RectF(left, y, right, y + 20), 13, Theme::rgb(Theme::TEXT4));
             y += 28;
         } else {
-            auto layout = c.wrapLayout(GuiText::wide(g->notice()), 13, right - left - 28);
+            auto layout = c.wrapLayout(GuiText::wide(g->notice), 13, right - left - 28);
             const float h = Canvas::layoutSize(layout.Get()).height;
             c.fillRound(D2D1::RectF(left, y, right, y + h + 24), 10, Theme::rgb(Theme::FIELD));
             c.drawLayout(layout.Get(), left + 14, y + 12, Theme::rgb(Theme::TEXT2));
             y += h + 34;
         }
-        section(L"群成员 · " + std::to_wstring(g->members().size()));
-        for (const std::string& id : g->members()) {
+        section(L"群成员 · " + std::to_wstring(g->members.size()));
+        for (const MemberView& member : g->members) {
+            const std::string& id = member.id;
             paintAvatar(c, left + 15, y + 15, 15, id);
             float tagRight = right;
-            if (g->isOwner(id)) tagRight = paintTag(c, tagRight, y + 15, L"群主", accent);
-            else if (policy.allowAdmin() && g->isAdmin(id)) tagRight = paintTag(c, tagRight, y + 15, L"管理员", Theme::rgb(0xFF7A1A));
-            if (policy.allowMute() && g->isMuted(id)) tagRight = paintTag(c, tagRight, y + 15, L"禁言", Theme::rgb(Theme::TEXT3));
-            std::wstring name = senderName(id);
-            if (id == me->id()) name += L"（我）";
+            if (member.owner) tagRight = paintTag(c, tagRight, y + 15, L"群主", accent);
+            else if (member.admin) tagRight = paintTag(c, tagRight, y + 15, L"管理员", Theme::rgb(0xFF7A1A));
+            if (member.muted) tagRight = paintTag(c, tagRight, y + 15, L"禁言", Theme::rgb(Theme::TEXT3));
+            std::wstring name = GuiText::wide(member.nickname);
+            if (id == me.id) name += L"（我）";
             c.text(name, D2D1::RectF(left + 40, y, tagRight - 4, y + 30), 13, Theme::rgb(Theme::TEXT));
             y += 40;
         }

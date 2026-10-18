@@ -34,7 +34,7 @@ void PlatformTools::saveNow(GuiWindow& window) {
     for (const std::string& line : output) text += line + "\n";
     if (!ok || text.find("[注意]") != std::string::npos) {
         window.info(ok ? L"数据已另存" : L"保存失败", GuiText::wide(text.empty() ? "保存失败，请检查 data 目录。" : text));
-    } else if (window.session().loggedIn()) {
+    } else if (window.localSession().loggedIn()) {
         window.mainView().toast(L"数据已保存");
     } else {
         window.info(L"立即保存数据", L"数据已保存。");
@@ -110,7 +110,7 @@ void PlatformTools::registerDialog(GuiWindow& window) {
 }
 
 void PlatformTools::openServiceDialog(GuiWindow& window) {
-    User& user = *window.session().user();
+    User& user = *window.localSession().user();
     std::vector<ServiceType> options;
     std::vector<std::wstring> names;
     for (ServiceType t : ServiceTypeHelper::all()) {
@@ -127,7 +127,7 @@ void PlatformTools::openServiceDialog(GuiWindow& window) {
     addProfileFields(*dialog);
     dialog->choice(L"与本人的 QQ 号绑定（仅微信、微商有效）", { L"绑定", L"不绑定" }, 0);
     dialog->primary(L"开通", [&window, options](Dialog& d) {
-        Session& session = window.session();
+        LocalSession& session = window.localSession();
         User& owner = *session.user();
         std::string nickname, location, password, msg;
         Date birthday;

@@ -59,7 +59,7 @@ void GroupSquarePage::createGroupDialog(GuiWindow& window) {
         .field(L"群名称")
         .primary(L"创建", [&window](Dialog& d) {
             std::string msg;
-            Group* g = window.platform().createGroup(*window.session().current(), d.text(0), msg);
+            Group* g = window.platform().createGroup(*window.localSession().current(), d.text(0), msg);
             if (!g) {
                 d.setError(GuiText::wide(msg));
                 return false;

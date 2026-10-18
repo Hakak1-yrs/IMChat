@@ -165,7 +165,7 @@ float PagePanel::measure(Canvas& c, const PageModel::Row& row, float width) {
 
 void PagePanel::drawButton(Canvas& c, const PageModel::Button& b, const D2D1_RECT_F& r, bool compact,
                              const D2D1_RECT_F& clip) {
-    const D2D1_COLOR_F accent = Theme::accent(window_.session().current()->type());
+    const D2D1_COLOR_F accent = Theme::accent(window_.session().me().type);
     const bool hover = hovered(r);
     D2D1_COLOR_F fill, text;
     if (b.style == PageModel::PRIMARY) {
@@ -199,7 +199,7 @@ void PagePanel::paint(Canvas& c) {
         composerShown_ = model_.composer;
         placeEdits();
     }
-    const D2D1_COLOR_F accent = Theme::accent(window_.session().current()->type());
+    const D2D1_COLOR_F accent = Theme::accent(window_.session().me().type);
     const D2D1_RECT_F area = bodyArea();
     const float areaWidth = area.right - area.left;
     const float width = (std::min)(kMaxColumn, areaWidth - 64);

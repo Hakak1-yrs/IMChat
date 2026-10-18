@@ -1,4 +1,5 @@
 #include "LoginView.h"
+#include <cstdlib>
 #include "Canvas.h"
 #include "GuiText.h"
 #include "GuiWindow.h"
@@ -10,6 +11,9 @@
 namespace {
 const float kCardWidth = 400.0f;
 const float kCardHeight = 510.0f;
+const float kServerRowHeight = 82.0f;                 // 联网模式多出的“服务器”一行
+const unsigned long long kConnectTimeoutMs = 8000;   // 联网登录多久没有结果就放弃
+const std::uint16_t kDefaultPort = 9000;
 }  // namespace
 
 LoginView::LoginView(GuiWindow& window) : View(window) {}
@@ -19,8 +23,12 @@ ServiceType LoginView::service() const { return ServiceTypeHelper::all()[service
 void LoginView::show() {
     error_.clear();
     notice_.clear();
+    connecting_ = false;
     account_ = window_.createEdit(false, false, L"请输入账号", Theme::FIELD);
     password_ = window_.createEdit(false, true, L"请输入密码", Theme::FIELD);
+    server_ = window_.createEdit(false, false, L"服务器地址，如 127.0.0.1:9000", Theme::FIELD);
+    SetWindowTextW(server_, serverText_.c_str());
+    ShowWindow(server_, remote_ ? SW_SHOW : SW_HIDE);
     GuiWindow::focus(account_);
 }
 
@@ -30,11 +38,15 @@ void LoginView::setNotice(const std::wstring& text) {
     window_.invalidate();
 }
 
-void LoginView::prefill(ServiceType type, const std::string& id) {
+void LoginView::selectService(ServiceType type) {
     std::vector<ServiceType> all = ServiceTypeHelper::all();
     for (size_t i = 0; i < all.size(); ++i) {
         if (all[i] == type) serviceIndex_ = static_cast<int>(i);
     }
+}
+
+void LoginView::prefill(ServiceType type, const std::string& id) {
+    selectService(type);
     if (account_) SetWindowTextW(account_, GuiText::wide(id).c_str());
     if (password_) SetWindowTextW(password_, L"");
     error_.clear();
@@ -46,24 +58,26 @@ void LoginView::prefill(ServiceType type, const std::string& id) {
 void LoginView::hide() {
     window_.destroyEdit(account_);
     window_.destroyEdit(password_);
+    window_.destroyEdit(server_);
 }
 
 D2D1_RECT_F LoginView::card() const {
+    const float height = kCardHeight + (remote_ ? kServerRowHeight : 0.0f);
     const float x = (bounds_.left + bounds_.right - kCardWidth) / 2;
-    const float y = (bounds_.top + bounds_.bottom - kCardHeight) / 2 - 12;
-    return D2D1::RectF(x, y, x + kCardWidth, y + kCardHeight);
+    const float y = (bounds_.top + bounds_.bottom - height) / 2 - 12;
+    return D2D1::RectF(x, y, x + kCardWidth, y + height);
 }
 
 D2D1_RECT_F LoginView::field(int row) const {
     const D2D1_RECT_F c = card();
-    const float top = c.top + (row == 0 ? 272.0f : 354.0f);
+    const float top = c.top + 272.0f + 82.0f * row;
     return D2D1::RectF(c.left + 36, top, c.right - 36, top + 46);
 }
 
 void LoginView::layout(const D2D1_RECT_F& bounds) {
     View::layout(bounds);
-    HWND edits[] = { account_, password_ };
-    for (int row = 0; row < 2; ++row) {
+    HWND edits[] = { account_, password_, server_ };
+    for (int row = 0; row < 3; ++row) {
         const D2D1_RECT_F f = field(row);
         const float mid = (f.top + f.bottom) / 2;
         if (edits[row]) window_.placeEdit(edits[row], D2D1::RectF(f.left + 16, mid - 11, f.right - 16, mid + 11));
@@ -97,6 +111,20 @@ void LoginView::paint(Canvas& c) {
     c.text(L"即时通信 · QQ / 微信 / 微博 / 微商", D2D1::RectF(card.left, card.top + 142, card.right, card.top + 164), 13,
            Theme::rgb(Theme::TEXT3), Align::CENTER);
 
+    // 右上角：单机 / 联网
+    const D2D1_RECT_F mode = D2D1::RectF(card.right - 128, card.top + 18, card.right - 18, card.top + 46);
+    c.fillRound(mode, 8, Theme::rgb(Theme::FIELD));
+    const wchar_t* modes[] = { L"单机", L"联网" };
+    for (int i = 0; i < 2; ++i) {
+        const float half = (mode.right - mode.left) / 2;
+        const D2D1_RECT_F r = D2D1::RectF(mode.left + half * i, mode.top, mode.left + half * (i + 1), mode.bottom);
+        const bool selected = (i == 1) == remote_;
+        if (selected) c.fillRound(D2D1::RectF(r.left + 2, r.top + 2, r.right - 2, r.bottom - 2), 6, Theme::rgb(Theme::PANEL));
+        c.text(modes[i], r, 12.5f, selected ? accent : Theme::rgb(Theme::TEXT3), Align::CENTER,
+               selected ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL);
+        if (!connecting_) addHit(r, ACT_MODE, i);
+    }
+
     // 服务选择（分段按钮）
     const D2D1_RECT_F seg = D2D1::RectF(card.left + 36, card.top + 190, card.right - 36, card.top + 230);
     c.fillRound(seg, 10, Theme::rgb(Theme::FIELD));
@@ -116,28 +144,46 @@ void LoginView::paint(Canvas& c) {
         addHit(r, ACT_SERVICE, static_cast<int>(i));
     }
 
-    // 账号、密码
-    const wchar_t* labels[] = { L"账号", L"密码" };
-    HWND edits[] = { account_, password_ };
-    for (int row = 0; row < 2; ++row) {
+    // 账号、密码；联网模式还有服务器地址
+    const wchar_t* labels[] = { L"账号", L"密码", L"服务器" };
+    HWND edits[] = { account_, password_, server_ };
+    const int rows = remote_ ? 3 : 2;
+    for (int row = 0; row < rows; ++row) {
         const D2D1_RECT_F f = field(row);
         c.text(labels[row], D2D1::RectF(f.left + 2, f.top - 22, f.right, f.top - 4), 13, Theme::rgb(Theme::TEXT2));
         c.fillRound(f, 12, Theme::rgb(Theme::FIELD));
         if (GetFocus() == edits[row]) c.strokeRound(f, 12, accent, 1.5f);
-        addHit(f, row == 0 ? ACT_ACCOUNT : ACT_PASSWORD);
+        addHit(f, row == 0 ? ACT_ACCOUNT : row == 1 ? ACT_PASSWORD : ACT_SERVER);
     }
+    const float extra = remote_ ? kServerRowHeight : 0.0f;
     if (!error_.empty())
-        c.text(error_, D2D1::RectF(card.left, card.top + 406, card.right, card.top + 428), 13, Theme::rgb(Theme::DANGER),
-               Align::CENTER);
+        c.text(error_, D2D1::RectF(card.left + 20, card.top + 406 + extra, card.right - 20, card.top + 428 + extra), 13,
+               Theme::rgb(Theme::DANGER), Align::CENTER);
     else if (!notice_.empty())
-        c.text(notice_, D2D1::RectF(card.left + 20, card.top + 406, card.right - 20, card.top + 428), 13, Theme::rgb(0x00A870),
-               Align::CENTER);
+        c.text(notice_, D2D1::RectF(card.left + 20, card.top + 406 + extra, card.right - 20, card.top + 428 + extra), 13,
+               Theme::rgb(0x00A870), Align::CENTER);
 
-    // 登录按钮
-    const D2D1_RECT_F button = D2D1::RectF(card.left + 36, card.top + 434, card.right - 36, card.top + 482);
-    c.fillRound(button, 12, hovered(button) ? Theme::darker(accent, 0.08f) : accent);
-    c.text(L"登  录", button, 16, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
-    addHit(button, ACT_LOGIN);
+    // 登录按钮（联网登录进行中显示进度）
+    const D2D1_RECT_F button = D2D1::RectF(card.left + 36, card.top + 434 + extra, card.right - 36, card.top + 482 + extra);
+    D2D1_COLOR_F fill = hovered(button) && !connecting_ ? Theme::darker(accent, 0.08f) : accent;
+    if (connecting_) fill.a = 0.6f;
+    c.fillRound(button, 12, fill);
+    std::wstring label = L"登  录";
+    if (connecting_) {
+        RemoteSession* session = window_.remoteSession();
+        const bool loading = session && session->loginState() == RemoteSession::LoginState::LOADING;
+        label = loading ? L"正在加载数据…" : L"正在连接服务器…";
+    }
+    c.text(label, button, 16, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+    if (!connecting_) addHit(button, ACT_LOGIN);
+
+    if (remote_) {   // 注册、概况、保存都是对本地数据的操作，联网模式下不显示
+        c.text(L"联网模式：先启动 IMChatServer（默认端口 9000），不同电脑填服务端所在电脑的 IP",
+               D2D1::RectF(all.left, card.bottom + 20, all.right, card.bottom + 42), 12, Theme::rgb(Theme::TEXT3), Align::CENTER);
+        c.text(L"演示账号：QQ 10001 · 10002 · 10003，密码均为 123456",
+               D2D1::RectF(all.left, card.bottom + 46, all.right, card.bottom + 68), 12, Theme::rgb(Theme::TEXT3), Align::CENTER);
+        return;
+    }
 
     // 卡片下方：控制台主菜单的另外三项
     const wchar_t* links[] = { L"注册新用户", L"平台概况", L"立即保存数据" };
@@ -168,6 +214,14 @@ void LoginView::onAction(int action, int index) {
         break;
     case ACT_ACCOUNT: GuiWindow::focus(account_); break;
     case ACT_PASSWORD: GuiWindow::focus(password_); break;
+    case ACT_SERVER: GuiWindow::focus(server_); break;
+    case ACT_MODE:
+        remote_ = index == 1;
+        error_.clear();
+        notice_.clear();
+        ShowWindow(server_, remote_ ? SW_SHOW : SW_HIDE);
+        layout(bounds_);   // 卡片变高或变矮，输入框跟着移动
+        break;
     case ACT_LOGIN: submit(); return;   // 登录成功后本视图已经隐藏，不再重绘
     case ACT_LINK:
         if (index == LINK_REGISTER) PlatformTools::registerDialog(window_);
@@ -180,7 +234,8 @@ void LoginView::onAction(int action, int index) {
 
 bool LoginView::onEditKey(HWND edit, int key) {
     if (key == VK_TAB) {
-        GuiWindow::focus(edit == account_ ? password_ : account_);
+        HWND next = edit == account_ ? password_ : (edit == password_ && remote_ ? server_ : account_);
+        GuiWindow::focus(next);
         return true;
     }
     if (key == VK_RETURN) {
@@ -191,11 +246,83 @@ bool LoginView::onEditKey(HWND edit, int key) {
     return false;
 }
 
+void LoginView::onTimer() {
+    if (!connecting_) return;
+    RemoteSession* session = window_.remoteSession();
+    if (!session) {
+        connecting_ = false;
+        return;
+    }
+    const RemoteSession::LoginState state = session->loginState();
+    if (state == RemoteSession::LoginState::READY) {
+        connecting_ = false;
+        window_.showMain();
+        window_.mainView().toast(L"已连接服务器 " + GuiText::wide(session->server()));
+    } else if (state == RemoteSession::LoginState::FAILED) {
+        remoteFailed(GuiText::wide(session->loginError()));
+    } else if (GetTickCount64() - connectStarted_ > kConnectTimeoutMs) {
+        remoteFailed(L"无法连接服务器 " + GuiText::wide(session->server()) + L"，请确认服务端已启动、地址正确");
+    }
+    window_.invalidate();   // 按钮上的进度文字
+}
+
+void LoginView::startRemote(const std::string& server, const std::string& id, const std::string& password) {
+    std::string host = server;
+    std::uint16_t port = kDefaultPort;
+    const std::size_t colon = server.rfind(':');
+    if (colon != std::string::npos) {
+        host = server.substr(0, colon);
+        port = static_cast<std::uint16_t>(std::atoi(server.c_str() + colon + 1));
+    }
+    if (host.empty() || port == 0) {
+        error_ = L"服务器地址格式应为 IP:端口，如 127.0.0.1:9000";
+        window_.invalidate();
+        return;
+    }
+    serverText_ = GuiText::wide(server);
+    auto session = std::make_unique<RemoteSession>(host, port);
+    session->start(service(), id, password);
+    window_.startRemote(std::move(session));
+    connecting_ = true;
+    connectStarted_ = GetTickCount64();
+    error_.clear();
+    notice_.clear();
+    window_.invalidate();
+}
+
+void LoginView::remoteFailed(const std::wstring& error) {
+    connecting_ = false;
+    window_.endRemote();   // 停止后台的连接和重试
+    error_ = error;
+    SetWindowTextW(password_, L"");
+    GuiWindow::focus(password_);
+}
+
+void LoginView::autoRemote(const std::string& server, ServiceType type, const std::string& id, const std::string& password) {
+    remote_ = true;
+    selectService(type);
+    SetWindowTextW(server_, GuiText::wide(server).c_str());
+    SetWindowTextW(account_, GuiText::wide(id).c_str());
+    ShowWindow(server_, SW_SHOW);
+    layout(bounds_);
+    startRemote(server, id, password);
+}
+
 void LoginView::submit() {
+    if (connecting_) return;
     const std::string id = Util::trim(GuiText::utf8(GuiText::editText(account_)));
     const std::string password = Util::trim(GuiText::utf8(GuiText::editText(password_)));
+    if (remote_) {
+        if (id.empty() || password.empty()) {
+            error_ = L"请输入账号和密码。";
+            window_.invalidate();
+            return;
+        }
+        startRemote(Util::trim(GuiText::utf8(GuiText::editText(server_))), id, password);
+        return;
+    }
     std::string msg;
-    if (!window_.session().login(service(), id, password, msg)) {
+    if (!window_.localSession().login(service(), id, password, msg)) {
         error_ = GuiText::wide(msg);
         SetWindowTextW(password_, L"");
         GuiWindow::focus(password_);

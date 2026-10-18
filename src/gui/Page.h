@@ -6,7 +6,7 @@ class GuiWindow;
 class MainView;
 class Platform;
 class ServiceBase;
-class Session;
+class LocalSession;
 class User;
 
 // 功能页抽象基类：个人中心、好友资料、跨服务好友、群设置、全部群、点对点聊天、实时群聊室都从它派生。
@@ -26,7 +26,7 @@ public:
     virtual std::string key() const;                    // 页面对应的会话（用于左侧列表高亮），如 "P:10002"
 
 protected:
-    Session& session();
+    LocalSession& session();   // 功能页只在单机模式下开放，直接使用单机模式的会话
     Platform& platform();
     ServiceBase& me();          // 当前正在使用的服务账号
     User& user();

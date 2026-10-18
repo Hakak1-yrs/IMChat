@@ -6,12 +6,14 @@
 #include <vector>
 #include "Conversation.h"
 #include "Message.h"
+#include "Session.h"
 #include "View.h"
 
 // 聊天面板（主界面右侧）：标题栏、消息气泡、输入框，以及可展开的资料抽屉（好友资料 / 群成员与群公告）。
 // 自己的消息在右侧、用当前服务的强调色；别人的消息在左侧、白色气泡；相隔 5 分钟以上的消息之间显示时间。
 // 标题栏的放大镜按钮打开“聊天记录查询”，输入关键字即时筛选。
-// 与微信电脑版相同，右键一条消息弹出菜单：复制、@TA（群聊）、撤回（自己 2 分钟内的消息，或群主、管理员撤回成员的消息）
+// 与微信电脑版相同，右键一条消息弹出菜单：复制、@TA（群聊）、撤回（自己 2 分钟内的消息，或群主、管理员撤回成员的消息）。
+// 私信中自己的消息旁显示“已读 / 未读”；联网模式下还没收到服务端确认的消息显示“发送中”（断线期间发的会一直等到重连后补发）
 class ChatPanel : public View {
 public:
     explicit ChatPanel(GuiWindow& window);
@@ -41,10 +43,11 @@ private:
         int action;
         bool danger;
     };
-    enum RowKind { ROW_TIME, ROW_MINE, ROW_OTHER, ROW_NOTICE, ROW_SYSTEM };   // ROW_SYSTEM：系统提示、撤回提示
+    // ROW_SYSTEM：系统提示、撤回提示；ROW_PENDING：还在等服务端确认的消息
+    enum RowKind { ROW_TIME, ROW_MINE, ROW_OTHER, ROW_NOTICE, ROW_SYSTEM, ROW_PENDING };
     struct Row {
         RowKind kind;
-        size_t message;                                       // 在 messages_ 中的下标
+        size_t message;                                       // 在 messages_ 中的下标（ROW_PENDING 为 pending_ 中的下标）
         float top, height, bubbleWidth, bubbleHeight, nameHeight;
         Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
         std::wstring label;                                   // 时间分隔的文字
@@ -62,7 +65,8 @@ private:
     bool matches(const Message& m) const;
     std::wstring senderName(const std::string& id) const;
     float contentRight() const;
-    int iconCount() const;          // 标题栏右侧的图标按钮个数（群聊多一个“实时群聊室”）
+    std::vector<int> headerActions() const;   // 标题栏右侧的图标按钮（实时群聊室、群设置只在单机模式下有）
+    int iconCount() const;
     float iconsLeft() const;        // 最左边一个图标按钮的左边界
     D2D1_RECT_F headerArea() const;
     D2D1_RECT_F inputArea() const;
@@ -82,6 +86,8 @@ private:
     Conversation conversation_;
     bool open_ = false;
     std::vector<Message> messages_;
+    std::vector<PendingView> pending_;
+    int peerRead_ = 0;             // 私信的对方读到了哪一条
     int lastSeq_ = -1;
     std::vector<Row> rows_;
     bool rowsDirty_ = true;

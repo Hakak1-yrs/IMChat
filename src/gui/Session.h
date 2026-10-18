@@ -1,53 +1,100 @@
 #pragma once
-#include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 #include "Conversation.h"
-#include "Platform.h"
+#include "Message.h"
+#include "ServiceType.h"
 
-// 图形界面的会话状态：当前登录的用户、正在使用的服务，以及界面需要的各种数据查询。
-// 所有业务规则仍由 Platform、Group、MessageCenter 负责，这里只做“为界面整理数据”，
-// 因此界面类只关心怎么画，不直接操作业务数据（与控制台版的 Menu 处于同一层次）
+// ---- 界面使用的数据：只是为了显示而整理的简单结构，与数据来自本地还是服务端无关 ----
+
+struct AccountView {   // 当前登录的服务账号
+    ServiceType type = ServiceType::QQ;
+    std::string id;
+    std::string nickname;
+    std::string location;
+    std::string momentsName;   // QQ空间 / 朋友圈 / 微博动态 / 商品动态
+};
+
+struct MemberView {
+    std::string id;
+    std::string nickname;
+    bool owner = false;
+    bool admin = false;
+    bool muted = false;
+};
+
+struct GroupView {   // 群资料（聊天面板的资料抽屉、@ 提醒）
+    int groupNo = 0;
+    std::string name;
+    std::string modeName;
+    std::string notice;
+    std::vector<MemberView> members;
+    bool canMentionAll = false;   // 我能不能 @所有人
+};
+
+struct ProfileView {   // 私信对方的资料（聊天面板的资料抽屉）
+    bool known = false;                      // 账号存在
+    std::string nickname;
+    std::string location;
+    std::string birthday;
+    int tAge = 0;
+    bool showOnline = false;                 // 联网模式才知道对方是否在线
+    bool online = false;
+    std::vector<std::string> mutualFriends;  // 共同好友的账号
+};
+
+struct PendingView {   // 联网模式：已经发出、还没收到服务端确认的消息（断线时会一直等到重连后补发）
+    std::string text;
+    bool failed = false;   // 服务端拒绝了（如对方已不是好友），error 是原因
+    std::string error;
+};
+
+// 图形界面的会话：当前登录的用户和服务，以及界面需要的全部数据查询和操作。
+// 界面只通过这个接口取数据、做操作，不接触业务对象，因此同一套界面有两种实现（桥接模式）：
+// - LocalSession：直接读写本地数据文件（单机模式，功能最全）；
+// - RemoteSession：通过网络连接 IMChatServer（联网模式，可以在不同电脑之间聊天）。
 class Session {
 public:
-    explicit Session(Platform& platform);
+    virtual ~Session() = default;
 
-    // 登录：密码正确后，本人已开通的其他服务一并进入登录状态（题目：一处登录，其他服务视为自动登录）
-    bool login(ServiceType type, const std::string& id, const std::string& password, std::string& msg);
-    void logout();
-    bool switchService(ServiceType type);
-    // 关闭当前服务（删除账号及其好友、群数据），之后自动切换到本人仍在使用的其他服务
-    bool closeCurrentService(std::string& msg);
-    // 注销整个用户：删除全部服务账号后回到未登录状态
-    void deleteCurrentUser(std::string& msg);
-    bool loggedIn() const;
-    User* user() const;
-    ServiceBase* current() const;
-    Platform& platform();
+    virtual bool isRemote() const = 0;
+    virtual bool loggedIn() const = 0;
+    virtual void logout() = 0;
+
+    // ---- 当前账号 ----
+    virtual AccountView me() const = 0;
+    virtual std::vector<ServiceType> services() const = 0;   // 本人可以切换的服务（导航栏）
+    virtual bool switchService(ServiceType type) = 0;
+    virtual int unreadOf(ServiceType type) const = 0;        // 某个服务的未读总数（导航栏红点）
 
     // ---- 列表 ----
-    std::vector<Conversation> recentChats() const;   // 消息页：有过私信的好友 + 我加入的群，最近的在前
-    std::vector<Conversation> contacts() const;      // 联系人页：全部好友
-    std::vector<Conversation> myGroups() const;      // 群聊页：我加入的群
-    int unreadOf(const ServiceBase& account) const;  // 某个服务的未读总数（导航栏红点）
+    virtual std::vector<Conversation> recentChats() const = 0;   // 消息页：有过消息的好友 + 我加入的群，最近的在前
+    virtual std::vector<Conversation> contacts() const = 0;      // 联系人页：全部好友
+    virtual std::vector<Conversation> myGroups() const = 0;      // 群聊页：我加入的群
 
     // ---- 聊天 ----
-    std::vector<Message> messages(const Conversation& c) const;
-    bool canSend(const Conversation& c, std::string& reason) const;   // 不能发言时给出原因（被禁言、已不是好友……）
-    bool send(const Conversation& c, const std::string& text, std::string& msg);
-    void markRead(const Conversation& c, int seq);
-    std::string titleOf(const Conversation& c) const;
-    Group* groupOf(const Conversation& c) const;
+    virtual std::vector<Message> messages(const Conversation& c) const = 0;   // 按时间先后
+    virtual std::vector<PendingView> pending(const Conversation& c) const;    // 还在等确认的消息（只有联网模式有）
+    virtual int peerReadSeq(const Conversation& c) const = 0;                 // 私信的对方已读到哪一条（显示“已读”）
+    virtual bool canSend(const Conversation& c, std::string& reason) const = 0;   // 不能发言时给出原因
+    virtual bool send(const Conversation& c, const std::string& text, std::string& msg) = 0;
+    virtual void markRead(const Conversation& c, int seq) = 0;
+    virtual std::string titleOf(const Conversation& c) const = 0;
+    virtual std::optional<GroupView> group(const Conversation& c) const = 0;
+    virtual ProfileView profile(const std::string& id) const = 0;
+    virtual std::string nicknameOf(const std::string& id) const = 0;
 
-    // 消息文件在上次检查之后是否有变化（本窗口、其他窗口或控制台程序发了新消息）
-    bool messagesChanged();
+    // ---- 撤回与 @ ----
+    virtual bool mentionsMe(const Message& m) const = 0;
+    virtual bool canRevoke(const Message& m) const = 0;
+    virtual void revoke(const Message& m) = 0;   // 失败的原因通过 takeNotice 告诉界面
+    virtual std::string revokeText(const Message& m) const = 0;   // “小张”撤回了一条消息
 
-private:
-    void fill(Conversation& c) const;   // 填写名称、副标题
-
-    Platform& platform_;
-    User* user_ = nullptr;
-    ServiceBase* current_ = nullptr;
-    std::filesystem::file_time_type stamp_{};
-    std::uintmax_t size_ = 0;
+    // ---- 刷新与提示 ----
+    virtual bool changed() = 0;            // 自上次调用以来是否有新数据（新消息、其他窗口的修改……），有则界面刷新
+    virtual std::string takeNotice();      // 需要提示用户的一句话，取走后清空
+    virtual std::string status() const;    // 连接状态（联网模式断线时显示），正常时为空
+    virtual int pendingFriendRequests() const;
+    virtual int momentNotices() const;
 };

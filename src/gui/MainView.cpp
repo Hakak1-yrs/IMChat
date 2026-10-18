@@ -9,6 +9,7 @@
 #include "GroupSquarePage.h"
 #include "GuiText.h"
 #include "GuiWindow.h"
+#include "LoginView.h"
 #include "MomentsPage.h"
 #include "NewFriendsPage.h"
 #include "P2PPage.h"
@@ -44,7 +45,9 @@ void MainView::show() {
     tab_ = TAB_CHATS;
     filter_.clear();
     listScroll_ = 0;
-    window_.session().messagesChanged();   // 记下消息文件的当前状态，之后只在有变化时刷新
+    leaving_ = false;
+    status_.clear();
+    window_.session().changed();   // 记下数据的当前状态，之后只在有变化时刷新
     reload();
     updateTitle();
 }
@@ -86,7 +89,8 @@ D2D1_RECT_F MainView::chatArea() const {
 }
 
 float MainView::stripHeight() const {
-    return tab_ == TAB_CHATS ? 0.0f : tab_ == TAB_CONTACTS ? kStripHeight + kItemHeight : kStripHeight;
+    if (tab_ == TAB_CHATS || window_.session().isRemote()) return 0.0f;   // 联网模式暂不提供加好友、建群等操作
+    return tab_ == TAB_CONTACTS ? kStripHeight + kItemHeight : kStripHeight;
 }
 
 bool MainView::showingPage() const { return pages_.page() != nullptr; }
@@ -100,8 +104,11 @@ const View& MainView::right() const {
 std::string MainView::selectedKey() const { return showingPage() ? pages_.page()->key() : chat_.openKey(); }
 
 void MainView::updateTitle() {
-    ServiceBase* me = window_.session().current();
-    if (me) window_.setTitle(L"IMChat · " + GuiText::wide(me->serviceName() + " " + me->displayName()));
+    Session& session = window_.session();
+    if (!session.loggedIn()) return;
+    const AccountView me = session.me();
+    window_.setTitle(L"IMChat · " + GuiText::wide(ServiceTypeHelper::name(me.type) + " " + me.nickname + "(" + me.id + ")") +
+                     (session.isRemote() ? L" · 联网模式" : L""));
 }
 
 // ======================== 页面切换 ========================
@@ -165,7 +172,7 @@ void MainView::endNetworkSessions() {
 void MainView::switchService(ServiceType type) {
     window_.post([this, type] {
         Session& session = window_.session();
-        if (!session.loggedIn() || session.current()->type() == type || !session.switchService(type)) return;
+        if (!session.loggedIn() || session.me().type == type || !session.switchService(type)) return;
         chat_.close();
         pages_.clear();
         listScroll_ = 0;
@@ -194,9 +201,9 @@ void MainView::reload() {
     contacts_ = session.contacts();
     groups_ = session.myGroups();
     railUnread_.clear();
-    for (ServiceBase* s : session.user()->services()) railUnread_.push_back(session.unreadOf(*s));
-    pendingRequests_ = session.platform().pendingRequestCount(*session.current());
-    momentNotices_ = static_cast<int>(session.platform().momentNotices(*session.current(), true).size());
+    for (ServiceType type : session.services()) railUnread_.push_back(session.unreadOf(type));
+    pendingRequests_ = session.pendingFriendRequests();
+    momentNotices_ = session.momentNotices();
     window_.invalidate();
 }
 
@@ -226,25 +233,51 @@ void MainView::toast(const std::wstring& text) {
 
 void MainView::onTimer() {
     Session& session = window_.session();
-    if (!session.loggedIn()) return;
+    if (!session.loggedIn()) {
+        // 联网模式下被挤下线：回到登录页并说明原因
+        if (session.isRemote()) backToLogin(GuiText::wide(session.takeNotice()));
+        return;
+    }
     // 每 0.1 秒：点对点聊天、群聊室的网络收发
     bool changed = false;
     if (p2p_ && p2p_->poll()) changed = true;
     if (room_ && room_->poll()) changed = true;
     if (changed) window_.invalidate();
-    if (++ticks_ % 4 != 0) return;
-    // 每 0.4 秒：检查消息文件（其他窗口、控制台版发来的消息），以及提示条是否到时
+    // 联网模式每 0.1 秒处理一次服务端推来的数据；单机模式每 0.4 秒检查一次消息文件（其他窗口、控制台版发来的消息）
+    if (!session.isRemote() && ++ticks_ % 4 != 0) return;
     const bool foreground = GetForegroundWindow() == window_.hwnd();
-    if (session.messagesChanged() || (foreground && !foreground_)) {
-        session.platform().syncSocial();   // 其他窗口刚写入的好友申请结果、删除、拉黑
-        chat_.refresh();                   // 正在看的会话：显示新消息并记为已读
+    const bool dataChanged = session.changed();
+    if (!session.loggedIn()) {   // 刚处理的推送里有“被挤下线”：带着原因回到登录页
+        backToLogin(GuiText::wide(session.takeNotice()));
+        return;
+    }
+    if (dataChanged || (foreground && !foreground_)) {
+        chat_.refresh();   // 正在看的会话：显示新消息并记为已读
         reload();
     }
     foreground_ = foreground;
+    const std::string notice = session.takeNotice();   // 比如联网模式下撤回失败的原因
+    if (!notice.empty()) toast(GuiText::wide(notice));
+    const std::wstring status = GuiText::wide(session.status());
+    if (status != status_) {   // 连接状态变化（断线、重连成功）
+        status_ = status;
+        window_.invalidate();
+    }
     if (!toast_.empty() && GetTickCount64() >= toastUntil_) {
         toast_.clear();
         window_.invalidate();
     }
+}
+
+void MainView::backToLogin(const std::wstring& notice) {
+    if (leaving_) return;
+    leaving_ = true;
+    window_.post([this, notice] {
+        window_.session().logout();
+        window_.showLogin();   // 先切换视图（主界面隐藏时还会用到会话），再结束联网会话
+        window_.endRemote();
+        if (!notice.empty()) window_.loginView().setNotice(notice);
+    });
 }
 
 void MainView::onClick(float x, float y) {
@@ -305,10 +338,7 @@ void MainView::onAction(int action, int index) {
         switchService(static_cast<ServiceType>(index));
         break;
     case ACT_LOGOUT:
-        window_.post([this] {
-            window_.session().logout();
-            window_.showLogin();
-        });
+        backToLogin(L"");
         return;
     case ACT_TAB:
         tab_ = static_cast<Tab>(index);
@@ -316,7 +346,8 @@ void MainView::onAction(int action, int index) {
         break;
     case ACT_ITEM: {
         const Conversation& item = currentList()[index];
-        if (tab_ == TAB_CONTACTS) showFriend(item.peerId);   // 联系人：先看资料，资料页可以发消息
+        // 联系人：单机模式先看资料（资料页可以发消息、改备注）；联网模式直接打开聊天
+        if (tab_ == TAB_CONTACTS && !window_.session().isRemote()) showFriend(item.peerId);
         else openChat(item);
         break;
     }
@@ -355,6 +386,7 @@ void MainView::paint(Canvas& c) {
     paintRail(c);
     paintList(c);
     right().paint(c);
+    paintStatus(c);
     paintToast(c);
     if (!tooltip_.empty()) {   // 导航栏按钮的悬停提示，画在最上层
         const float w = c.textWidth(tooltip_, 12.5f) + 24;
@@ -382,7 +414,9 @@ void MainView::railButton(Canvas& c, const D2D1_RECT_F& r, wchar_t icon, const s
 void MainView::paintRail(Canvas& c) {
     const D2D1_RECT_F r = railArea();
     Session& session = window_.session();
-    const D2D1_COLOR_F accent = Theme::accent(session.current()->type());
+    const AccountView me = session.me();
+    const bool local = !session.isRemote();
+    const D2D1_COLOR_F accent = Theme::accent(me.type);
     const float cx = (r.left + r.right) / 2;
     c.fillRect(r, Theme::rgb(Theme::RAIL));
 
@@ -391,63 +425,72 @@ void MainView::paintRail(Canvas& c) {
     c.text(L"IM", logo, 15, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
 
     float y = r.top + 88;
-    std::vector<ServiceBase*> services = session.user()->services();
+    const std::vector<ServiceType> services = session.services();
     for (size_t i = 0; i < services.size(); ++i) {
-        ServiceBase* s = services[i];
-        const bool active = s == session.current();
+        const ServiceType type = services[i];
+        const bool active = type == me.type;
         const D2D1_RECT_F button = D2D1::RectF(cx - 25, y, cx + 25, y + 48);
-        if (active) c.fillRound(button, 15, Theme::accent(s->type()));
+        if (active) c.fillRound(button, 15, Theme::accent(type));
         else if (hovered(button)) c.fillRound(button, 15, Theme::rgb(0xE1E4EA));
-        c.text(Theme::shortName(s->type()), button, 13, active ? Theme::rgb(0xFFFFFF) : Theme::rgb(Theme::TEXT2),
+        c.text(Theme::shortName(type), button, 13, active ? Theme::rgb(0xFFFFFF) : Theme::rgb(Theme::TEXT2),
                Align::CENTER, active ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL);
         if (!active && i < railUnread_.size() && railUnread_[i] > 0) {   // 其他服务有未读消息：名称右上角的小红点
-            const float labelHalf = c.textWidth(Theme::shortName(s->type()), 13) / 2;
+            const float labelHalf = c.textWidth(Theme::shortName(type), 13) / 2;
             c.fillCircle(cx + labelHalf + 4, (button.top + button.bottom) / 2 - 8, 4, Theme::rgb(Theme::DANGER));
         }
         if (hovered(button)) {
-            tooltip_ = L"切换到" + Theme::shortName(s->type()) + L"  " + GuiText::wide(s->id());
+            tooltip_ = active ? Theme::shortName(type) + L"（当前）" : L"切换到" + Theme::shortName(type);
             tooltipAnchor_ = button;
         }
-        addHit(button, ACT_SERVICE, static_cast<int>(s->type()));
+        addHit(button, ACT_SERVICE, static_cast<int>(type));
         y += 58;
     }
-    if (services.size() < ServiceTypeHelper::all().size())   // 还有没开通的服务
+    if (local && services.size() < ServiceTypeHelper::all().size())   // 还有没开通的服务
         railButton(c, D2D1::RectF(cx - 22, y + 2, cx + 22, y + 46), kIconAdd, L"开通新服务", ACT_TOOL, TOOL_OPEN_SERVICE, false);
 
-    // 底部工具：朋友圈、点对点聊天、平台概况、立即保存、退出登录
-    const D2D1_RECT_F moments = D2D1::RectF(cx - 22, r.bottom - 274, cx + 22, r.bottom - 230);
-    railButton(c, moments, kIconCamera, GuiText::wide(session.current()->momentsName()), ACT_TOOL, TOOL_MOMENTS, false);
-    if (momentNotices_ > 0) c.fillCircle(moments.right - 9, moments.top + 9, 4.5f, Theme::rgb(Theme::DANGER));   // 有新互动
-    const bool p2pActive = p2p_ && p2p_->active();
-    railButton(c, D2D1::RectF(cx - 22, r.bottom - 222, cx + 22, r.bottom - 178), kIconConnect, L"QQ点对点聊天（TCP）", ACT_TOOL,
-               TOOL_P2P, p2pActive);
-    railButton(c, D2D1::RectF(cx - 22, r.bottom - 170, cx + 22, r.bottom - 126), kIconHome, L"平台概况", ACT_TOOL, TOOL_OVERVIEW, false);
-    railButton(c, D2D1::RectF(cx - 22, r.bottom - 118, cx + 22, r.bottom - 74), kIconSave, L"立即保存数据", ACT_TOOL, TOOL_SAVE, false);
+    // 底部工具：朋友圈、点对点聊天、平台概况、立即保存（这几项直接操作本地数据，只在单机模式下有），退出登录
+    if (local) {
+        const D2D1_RECT_F moments = D2D1::RectF(cx - 22, r.bottom - 274, cx + 22, r.bottom - 230);
+        railButton(c, moments, kIconCamera, GuiText::wide(me.momentsName), ACT_TOOL, TOOL_MOMENTS, false);
+        if (momentNotices_ > 0) c.fillCircle(moments.right - 9, moments.top + 9, 4.5f, Theme::rgb(Theme::DANGER));   // 有新互动
+        const bool p2pActive = p2p_ && p2p_->active();
+        railButton(c, D2D1::RectF(cx - 22, r.bottom - 222, cx + 22, r.bottom - 178), kIconConnect, L"QQ点对点聊天（TCP）", ACT_TOOL,
+                   TOOL_P2P, p2pActive);
+        railButton(c, D2D1::RectF(cx - 22, r.bottom - 170, cx + 22, r.bottom - 126), kIconHome, L"平台概况", ACT_TOOL, TOOL_OVERVIEW, false);
+        railButton(c, D2D1::RectF(cx - 22, r.bottom - 118, cx + 22, r.bottom - 74), kIconSave, L"立即保存数据", ACT_TOOL, TOOL_SAVE, false);
+    }
     railButton(c, D2D1::RectF(cx - 22, r.bottom - 66, cx + 22, r.bottom - 22), kIconPower, L"退出登录", ACT_LOGOUT, 0, false);
 }
 
 void MainView::paintList(Canvas& c) {
     const D2D1_RECT_F r = listArea();
-    ServiceBase* me = window_.session().current();
-    const D2D1_COLOR_F accent = Theme::accent(me->type());
+    Session& session = window_.session();
+    const AccountView me = session.me();
+    const bool local = !session.isRemote();
+    const D2D1_COLOR_F accent = Theme::accent(me.type);
     c.fillRect(r, Theme::rgb(Theme::PANEL));
     c.line(r.right - 0.5f, r.top, r.right - 0.5f, r.bottom, Theme::rgb(Theme::BORDER));
 
-    // 个人信息（点击进入个人中心）
+    // 个人信息（单机模式下点击进入个人中心）
     const D2D1_RECT_F profile = D2D1::RectF(r.left + 8, r.top + 14, r.right - 8, r.top + 74);
-    if (hovered(profile) || selectedKey() == "account") c.fillRound(profile, 12, Theme::rgb(Theme::HOVER));
-    addHit(profile, ACT_PROFILE);
+    if (local) {
+        if (hovered(profile) || selectedKey() == "account") c.fillRound(profile, 12, Theme::rgb(Theme::HOVER));
+        addHit(profile, ACT_PROFILE);
+    }
     const float ax = r.left + 42, ay = r.top + 44;
-    c.fillCircle(ax, ay, 22, Theme::avatar(me->id()));
-    c.text(GuiText::initial(me->nickname()), D2D1::RectF(ax - 22, ay - 22, ax + 22, ay + 22), 17, Theme::rgb(0xFFFFFF),
+    c.fillCircle(ax, ay, 22, Theme::avatar(me.id));
+    c.text(GuiText::initial(me.nickname), D2D1::RectF(ax - 22, ay - 22, ax + 22, ay + 22), 17, Theme::rgb(0xFFFFFF),
            Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+    const bool connected = status_.empty();   // 联网模式断线时显示灰色
     c.fillCircle(ax + 16, ay + 16, 6, Theme::rgb(Theme::PANEL));   // 在线状态
-    c.fillCircle(ax + 16, ay + 16, 4, Theme::rgb(0x23C343));
-    c.text(GuiText::wide(me->nickname()), D2D1::RectF(r.left + 76, r.top + 24, r.right - 40, r.top + 46), 15.5f,
+    c.fillCircle(ax + 16, ay + 16, 4, Theme::rgb(connected ? 0x23C343 : 0xC2C7D0));
+    c.text(GuiText::wide(me.nickname), D2D1::RectF(r.left + 76, r.top + 24, r.right - 40, r.top + 46), 15.5f,
            Theme::rgb(Theme::TEXT), Align::LEFT, DWRITE_FONT_WEIGHT_SEMI_BOLD);
-    c.text(Theme::shortName(me->type()) + L" " + GuiText::wide(me->id() + " · " + me->location()),
-           D2D1::RectF(r.left + 76, r.top + 46, r.right - 40, r.top + 64), 12, Theme::rgb(Theme::TEXT3));
-    c.icon(kIconChevron, D2D1::RectF(r.right - 40, r.top + 30, r.right - 16, r.top + 58), 11, Theme::rgb(Theme::TEXT4));
+    std::wstring second = Theme::shortName(me.type) + L" " + GuiText::wide(me.id + " · " + me.location);
+    if (RemoteSession* remote = window_.remoteSession()) second = Theme::shortName(me.type) + L" " + GuiText::wide(me.id) +
+                                                                  (connected ? L" · 已连接 " : L" · 连接中 ") + GuiText::wide(remote->server());
+    c.text(second, D2D1::RectF(r.left + 76, r.top + 46, r.right - (local ? 40 : 16), r.top + 64), 12, Theme::rgb(Theme::TEXT3));
+    if (local) c.icon(kIconChevron, D2D1::RectF(r.right - 40, r.top + 30, r.right - 16, r.top + 58), 11, Theme::rgb(Theme::TEXT4));
 
     // 搜索框（输入框控件放在里面）
     const D2D1_RECT_F search = D2D1::RectF(r.left + 16, r.top + 88, r.right - 16, r.top + 124);
@@ -483,7 +526,7 @@ void MainView::paintList(Canvas& c) {
     const D2D1_RECT_F body = listBody();
     c.pushClip(body);
     float y = body.top + 4 - listScroll_;
-    if (tab_ != TAB_CHATS) {   // 操作按钮条：添加好友 / 跨服务推荐；新建群 / 全部群
+    if (tab_ != TAB_CHATS && local) {   // 操作按钮条：添加好友 / 跨服务推荐；新建群 / 全部群
         const std::wstring labels[2] = { tab_ == TAB_CONTACTS ? L"＋ 添加好友" : L"＋ 新建群",
                                          tab_ == TAB_CONTACTS ? L"跨服务推荐" : L"全部群" };
         const int ids[2] = { tab_ == TAB_CONTACTS ? STRIP_ADD_FRIEND : STRIP_NEW_GROUP, tab_ == TAB_CONTACTS ? STRIP_CROSS : STRIP_SQUARE };
@@ -547,7 +590,7 @@ void MainView::paintList(Canvas& c) {
 }
 
 void MainView::paintItem(Canvas& c, const Conversation& item, const D2D1_RECT_F& r) {
-    const D2D1_COLOR_F accent = Theme::accent(window_.session().current()->type());
+    const D2D1_COLOR_F accent = Theme::accent(window_.session().me().type);
     if (selectedKey() == item.key()) {
         D2D1_COLOR_F tint = accent;
         tint.a = 0.10f;
@@ -591,6 +634,16 @@ void MainView::paintItem(Canvas& c, const Conversation& item, const D2D1_RECT_F&
         x += c.textWidth(mark, 12.5f) + 2;
     }
     c.text(second, D2D1::RectF(x, r.top + 37, r.right - 18 - badgeWidth, r.top + 57), 12.5f, secondColor);
+}
+
+void MainView::paintStatus(Canvas& c) {
+    if (status_.empty()) return;   // 联网模式断线：聊天区顶部一条橙色提示，重连成功后自动消失
+    const D2D1_RECT_F area = chatArea();
+    const D2D1_RECT_F bar = D2D1::RectF(area.left, area.top + 64, area.right, area.top + 64 + 32);
+    c.fillRect(bar, Theme::rgb(0xFFF3E8));
+    c.line(bar.left, bar.bottom - 0.5f, bar.right, bar.bottom - 0.5f, Theme::rgb(0xFFD8B5));
+    c.text(status_ + L"  发出的消息会在重连后自动补发", D2D1::RectF(bar.left + 24, bar.top, bar.right - 24, bar.bottom), 12.5f,
+           Theme::rgb(0xD25F00));
 }
 
 void MainView::paintToast(Canvas& c) {

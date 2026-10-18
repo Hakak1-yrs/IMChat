@@ -75,7 +75,9 @@ private:
     void railButton(Canvas& c, const D2D1_RECT_F& r, wchar_t icon, const std::wstring& tip, int action, int index, bool dot);
     void paintList(Canvas& c);
     void paintItem(Canvas& c, const Conversation& item, const D2D1_RECT_F& r);
+    void paintStatus(Canvas& c);
     void paintToast(Canvas& c);
+    void backToLogin(const std::wstring& notice);   // 退出登录或被挤下线：回到登录页（联网模式同时断开服务器）
 
     ChatPanel chat_;
     PagePanel pages_;
@@ -91,6 +93,8 @@ private:
     float listScroll_ = 0;
     std::wstring toast_;
     ULONGLONG toastUntil_ = 0;
+    std::wstring status_;                       // 连接状态（联网模式断线时），正常时为空
+    bool leaving_ = false;                      // 已经安排回到登录页（避免定时器重复安排）
     bool foreground_ = false;                   // 窗口回到前台时，把正在看的会话记为已读
     int ticks_ = 0;
     std::wstring tooltip_;                      // 导航栏按钮的悬停提示

@@ -10,13 +10,13 @@ bool Page::poll() { return false; }
 
 std::string Page::key() const { return ""; }
 
-Session& Page::session() { return window_.session(); }
+LocalSession& Page::session() { return window_.localSession(); }
 
 Platform& Page::platform() { return window_.platform(); }
 
-ServiceBase& Page::me() { return *window_.session().current(); }
+ServiceBase& Page::me() { return *window_.localSession().current(); }
 
-User& Page::user() { return *window_.session().user(); }
+User& Page::user() { return *window_.localSession().user(); }
 
 MainView& Page::main() { return window_.mainView(); }
 

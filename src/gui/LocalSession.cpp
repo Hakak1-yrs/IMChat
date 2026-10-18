@@ -1,11 +1,11 @@
-#include "Session.h"
+#include "LocalSession.h"
 #include <algorithm>
 #include <map>
 #include "Util.h"
 
-Session::Session(Platform& platform) : platform_(platform) {}
+LocalSession::LocalSession(Platform& platform) : platform_(platform) {}
 
-bool Session::login(ServiceType type, const std::string& id, const std::string& password, std::string& msg) {
+bool LocalSession::login(ServiceType type, const std::string& id, const std::string& password, std::string& msg) {
     ServiceBase* account = platform_.findAccount(type, id);
     User* owner = platform_.ownerOf(account);
     if (id.empty() || password.empty()) {
@@ -29,13 +29,13 @@ bool Session::login(ServiceType type, const std::string& id, const std::string& 
     return true;
 }
 
-void Session::logout() {
+void LocalSession::logout() {
     if (user_) user_->logoutAll();
     user_ = nullptr;
     current_ = nullptr;
 }
 
-bool Session::switchService(ServiceType type) {
+bool LocalSession::switchService(ServiceType type) {
     ServiceBase* target = user_ ? user_->service(type) : nullptr;
     if (!target) return false;
     target->login();
@@ -43,7 +43,7 @@ bool Session::switchService(ServiceType type) {
     return true;
 }
 
-bool Session::closeCurrentService(std::string& msg) {
+bool LocalSession::closeCurrentService(std::string& msg) {
     if (user_->services().size() == 1) {
         msg = "这是你唯一开通的服务，关闭后将无法登录。如需离开平台，请选择“注销整个账号”。";
         return false;
@@ -57,22 +57,51 @@ bool Session::closeCurrentService(std::string& msg) {
     return true;
 }
 
-void Session::deleteCurrentUser(std::string& msg) {
+void LocalSession::deleteCurrentUser(std::string& msg) {
     const int id = user_->id();
     user_ = nullptr;   // 用户对象即将被删除，先清空，之后不再访问
     current_ = nullptr;
     platform_.deleteUser(id, msg);
 }
 
-bool Session::loggedIn() const { return user_ != nullptr; }
+bool LocalSession::isRemote() const { return false; }
 
-User* Session::user() const { return user_; }
+bool LocalSession::loggedIn() const { return user_ != nullptr; }
 
-ServiceBase* Session::current() const { return current_; }
+User* LocalSession::user() const { return user_; }
 
-Platform& Session::platform() { return platform_; }
+ServiceBase* LocalSession::current() const { return current_; }
 
-void Session::fill(Conversation& c) const {
+Platform& LocalSession::platform() { return platform_; }
+
+AccountView LocalSession::me() const {
+    AccountView view;
+    if (!current_) return view;
+    view.type = current_->type();
+    view.id = current_->id();
+    view.nickname = current_->nickname();
+    view.location = current_->location();
+    view.momentsName = current_->momentsName();
+    return view;
+}
+
+std::vector<ServiceType> LocalSession::services() const {
+    std::vector<ServiceType> result;
+    if (user_) {
+        for (ServiceBase* s : user_->services()) result.push_back(s->type());
+    }
+    return result;
+}
+
+int LocalSession::unreadOf(ServiceType type) const {
+    ServiceBase* account = user_ ? user_->service(type) : nullptr;
+    if (!account) return 0;
+    int privateCount = 0, groupCount = 0;
+    platform_.unreadCount(*account, privateCount, groupCount);
+    return privateCount + groupCount;
+}
+
+void LocalSession::fill(Conversation& c) const {
     const ServiceType type = current_->type();
     if (c.isGroup) {
         Group* g = groupOf(c);
@@ -89,7 +118,7 @@ void Session::fill(Conversation& c) const {
     c.avatarName = acc ? acc->nickname() : c.peerId;
 }
 
-std::vector<Conversation> Session::recentChats() const {
+std::vector<Conversation> LocalSession::recentChats() const {
     const ServiceType type = current_->type();
     const std::string& me = current_->id();
     std::vector<int> groupNos;
@@ -102,15 +131,14 @@ std::vector<Conversation> Session::recentChats() const {
     MessageCenter& center = platform_.messages();
     for (const Message& m : center.messagesFor(type, me, groupNos)) {   // 按时间先后，最后一条覆盖前面的
         Conversation c = m.isGroup() ? Conversation::groupChat(std::stoi(m.target()))
-                                       : Conversation::privateChat(m.sender() == me ? m.target() : m.sender());
+                                     : Conversation::privateChat(m.sender() == me ? m.target() : m.sender());
         Conversation& entry = found.emplace(c.key(), c).first->second;
         entry.lastTime = m.time();
         entry.preview = m.text();
         if (m.revoked()) {
             entry.preview = platform_.revokeText(*current_, m);
         } else if (m.isGroup() && !m.isSystem() && m.sender() != me) {
-            ServiceBase* sender = platform_.findAccount(type, m.sender());
-            entry.preview = (sender ? sender->nickname() : m.sender()) + "：" + m.text();
+            entry.preview = nicknameOf(m.sender()) + "：" + m.text();
         }
     }
     std::map<std::string, int> unreadPrivate = center.unreadPrivate(type, me);
@@ -130,7 +158,7 @@ std::vector<Conversation> Session::recentChats() const {
     return result;
 }
 
-std::vector<Conversation> Session::contacts() const {
+std::vector<Conversation> LocalSession::contacts() const {
     std::map<std::string, int> unread = platform_.messages().unreadPrivate(current_->type(), current_->id());
     std::vector<Conversation> result;
     for (const Friend& f : current_->friends().all()) {
@@ -142,7 +170,7 @@ std::vector<Conversation> Session::contacts() const {
     return result;
 }
 
-std::vector<Conversation> Session::myGroups() const {
+std::vector<Conversation> LocalSession::myGroups() const {
     std::vector<int> groupNos;
     std::vector<Group*> groups = platform_.groups().groupsOf(current_->type(), current_->id());
     for (Group* g : groups) groupNos.push_back(g->groupNo());
@@ -158,19 +186,18 @@ std::vector<Conversation> Session::myGroups() const {
     return result;
 }
 
-int Session::unreadOf(const ServiceBase& account) const {
-    int privateCount = 0, groupCount = 0;
-    platform_.unreadCount(account, privateCount, groupCount);
-    return privateCount + groupCount;
-}
-
-std::vector<Message> Session::messages(const Conversation& c) const {
+std::vector<Message> LocalSession::messages(const Conversation& c) const {
     MessageCenter& center = platform_.messages();
     return c.isGroup ? center.groupHistory(current_->type(), c.groupNo)
                      : center.conversation(current_->type(), current_->id(), c.peerId);
 }
 
-bool Session::canSend(const Conversation& c, std::string& reason) const {
+int LocalSession::peerReadSeq(const Conversation& c) const {
+    // 已读记录的键是“会话对象 + 读者”：对方读我们之间的私信，对象是我，读者是对方
+    return c.isGroup ? 0 : platform_.messages().readMark(current_->type(), "P", current_->id(), c.peerId);
+}
+
+bool LocalSession::canSend(const Conversation& c, std::string& reason) const {
     if (c.isGroup) {
         Group* g = groupOf(c);
         if (!g) reason = "该群已解散";
@@ -184,7 +211,7 @@ bool Session::canSend(const Conversation& c, std::string& reason) const {
     return false;
 }
 
-bool Session::send(const Conversation& c, const std::string& text, std::string& msg) {
+bool LocalSession::send(const Conversation& c, const std::string& text, std::string& msg) {
     if (!c.isGroup) return platform_.sendPrivate(*current_, c.peerId, text, msg);
     Group* g = groupOf(c);
     if (!g) {
@@ -194,24 +221,80 @@ bool Session::send(const Conversation& c, const std::string& text, std::string& 
     return platform_.sendGroupMessage(*current_, *g, text, msg);
 }
 
-void Session::markRead(const Conversation& c, int seq) {
+void LocalSession::markRead(const Conversation& c, int seq) {
     if (seq <= 0) return;
     MessageCenter& center = platform_.messages();
     if (c.isGroup) center.markGroupRead(current_->type(), c.groupNo, current_->id(), seq);
     else center.markPrivateRead(current_->type(), current_->id(), c.peerId, seq);
 }
 
-std::string Session::titleOf(const Conversation& c) const {
+std::string LocalSession::titleOf(const Conversation& c) const {
     Conversation copy = c;
     fill(copy);
     return copy.title;
 }
 
-Group* Session::groupOf(const Conversation& c) const {
+Group* LocalSession::groupOf(const Conversation& c) const {
     return c.isGroup ? platform_.groups().find(current_->type(), c.groupNo) : nullptr;
 }
 
-bool Session::messagesChanged() {
+std::optional<GroupView> LocalSession::group(const Conversation& c) const {
+    const Group* g = groupOf(c);
+    if (!g) return std::nullopt;
+    const GroupPolicy& policy = g->policy();
+    GroupView view;
+    view.groupNo = g->groupNo();
+    view.name = g->name();
+    view.modeName = policy.modeName();
+    view.notice = g->notice();
+    view.canMentionAll = policy.canEditInfo(*g, current_->id());   // 群主（QQ 群模式下还有管理员）可以 @所有人
+    for (const std::string& id : g->members()) {
+        MemberView member;
+        member.id = id;
+        member.nickname = nicknameOf(id);
+        member.owner = g->isOwner(id);
+        member.admin = policy.allowAdmin() && g->isAdmin(id);
+        member.muted = policy.allowMute() && g->isMuted(id);
+        view.members.push_back(member);
+    }
+    return view;
+}
+
+ProfileView LocalSession::profile(const std::string& id) const {
+    ProfileView view;
+    ServiceBase* other = platform_.findAccount(current_->type(), id);
+    if (!other) return view;
+    view.known = true;
+    view.nickname = other->nickname();
+    view.location = other->location();
+    view.birthday = other->birthday().toString();
+    view.tAge = other->tAge();
+    view.mutualFriends = platform_.mutualFriends(*current_, *other);
+    return view;
+}
+
+std::string LocalSession::nicknameOf(const std::string& id) const {
+    ServiceBase* account = platform_.findAccount(current_->type(), id);
+    return account ? account->nickname() : id;
+}
+
+bool LocalSession::mentionsMe(const Message& m) const {
+    if (!m.isGroup()) return false;
+    const Group* g = platform_.groups().find(current_->type(), std::atoi(m.target().c_str()));
+    return g && Util::contains(platform_.mentionsOf(*g, m), current_->id());
+}
+
+bool LocalSession::canRevoke(const Message& m) const { return platform_.canRevoke(*current_, m); }
+
+void LocalSession::revoke(const Message& m) {
+    std::string msg;
+    if (!platform_.revokeMessage(*current_, m.seq(), msg)) notice_ = msg;
+}
+
+std::string LocalSession::revokeText(const Message& m) const { return platform_.revokeText(*current_, m); }
+
+bool LocalSession::changed() {
+    // 检查消息文件：本窗口、其他窗口或控制台程序写入新记录后，大小或修改时间会变
     std::error_code ec;
     const std::filesystem::path file = Util::pathOf(platform_.dataDir() + "messages.txt");
     auto stamp = std::filesystem::last_write_time(file, ec);
@@ -221,5 +304,18 @@ bool Session::messagesChanged() {
     if (stamp == stamp_ && size == size_) return false;
     stamp_ = stamp;
     size_ = size;
+    platform_.syncSocial();   // 其他窗口刚写入的好友申请结果、删除、拉黑
     return true;
+}
+
+std::string LocalSession::takeNotice() {
+    std::string notice;
+    notice.swap(notice_);
+    return notice;
+}
+
+int LocalSession::pendingFriendRequests() const { return current_ ? platform_.pendingRequestCount(*current_) : 0; }
+
+int LocalSession::momentNotices() const {
+    return current_ ? static_cast<int>(platform_.momentNotices(*current_, true).size()) : 0;
 }
