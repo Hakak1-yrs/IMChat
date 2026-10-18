@@ -7,7 +7,9 @@
 #include <iterator>
 #include <sstream>
 #include "IndependentIdService.h"
+#include "MessageCenter.h"
 #include "QQService.h"
+#include "SqliteMessageStore.h"
 #include "Util.h"
 #include "WeChatService.h"
 #include "WeiShangService.h"
@@ -55,10 +57,24 @@ double secondsSince(const std::string& time) {
     return std::difftime(std::time(nullptr), std::mktime(&t));
 }
 
+std::unique_ptr<MessageStore> createStore(const std::string& dataDir, Platform::Storage storage) {
+    if (storage == Platform::Storage::SQLITE) {
+        // 第一次使用时，已有的 messages.txt 会整体导入数据库（文本文件本身保留不动）
+        auto store = std::make_unique<SqliteMessageStore>(dataDir + "messages.db", dataDir + "messages.txt");
+        if (store->isOpen()) {
+            if (store->imported() > 0)
+                std::cout << "[系统] 已把 messages.txt 中的 " << store->imported() << " 条消息导入 messages.db。\n";
+            return store;
+        }
+        std::cout << "[系统] 无法打开 messages.db，改用 messages.txt。\n";
+    }
+    return std::make_unique<MessageCenter>(dataDir + "messages.txt");
+}
+
 }  // namespace
 
-Platform::Platform(const std::string& dataDir)
-    : dataDir_(dataDir), sessionStamp_(Date::nowStamp()), messages_(dataDir + "messages.txt"),
+Platform::Platform(const std::string& dataDir, Storage storage)
+    : dataDir_(dataDir), sessionStamp_(Date::nowStamp()), messages_(createStore(dataDir, storage)),
       usersFile_(dataDir, "users.txt"), accountsFile_(dataDir, "accounts.txt"), friendsFile_(dataDir, "friends.txt"),
       groupsFile_(dataDir, "groups.txt"), subGroupsFile_(dataDir, "subgroups.txt") {
     // 文件缺失时以空数据启动，退出时会自动创建数据文件
@@ -257,7 +273,7 @@ bool Platform::closeService(User& user, ServiceType type, std::string& msg) {
         }
     }
     // 4. 与该账号有关的私信、好友申请、黑名单、朋友圈作废：号码以后被重新分配时，新主人不会看到这些内容
-    messages_.clearAccount(type, id);
+    messages_->clearAccount(type, id);
     const std::string code = ServiceTypeHelper::code(type);
     for (auto it = blocked_.begin(); it != blocked_.end();) {
         std::istringstream iss(*it);
@@ -407,7 +423,7 @@ bool Platform::removeFriend(ServiceBase& me, const std::string& friendId, std::s
         msg = friendId + " 不是你的好友。";
         return false;
     }
-    messages_.appendRecord('D', me.type(), { me.id(), friendId }, false);   // 其他窗口据此同步
+    messages_->appendRecord('D', me.type(), { me.id(), friendId }, false);   // 其他窗口据此同步
     msg = "已删除好友 " + displayName(me.type(), friendId) + "。对方的好友列表中仍有你，对方再给你发消息时会被拒绝。";
     return true;
 }
@@ -480,7 +496,7 @@ Group* Platform::createGroup(const ServiceBase& me, const std::string& name, std
         return nullptr;
     }
     Group* group = groups_.createGroup(me.type(), groupName, me.id(), me.defaultGroupMode());
-    messages_.postGroup(me.type(), group->groupNo(), Message::systemSender(), nickOf(me.type(), me.id()) + " 创建了群聊");
+    messages_->postGroup(me.type(), group->groupNo(), Message::systemSender(), nickOf(me.type(), me.id()) + " 创建了群聊");
     msg = "群 " + std::to_string(group->groupNo()) + "（" + groupName + "）创建成功，你是群主，管理模式为" +
           group->policy().modeName() + "。";
     return group;
@@ -502,14 +518,14 @@ bool Platform::dissolveGroup(const ServiceBase& me, int groupNo, std::string& ms
     }
     const std::string name = group->name();
     groups_.remove(me.type(), groupNo);
-    messages_.clearGroup(me.type(), groupNo);   // 群号以后可能分配给新群，旧的群聊记录随之作废
+    messages_->clearGroup(me.type(), groupNo);   // 群号以后可能分配给新群，旧的群聊记录随之作废
     msg = "群 " + std::to_string(groupNo) + "（" + name + "）已解散，群聊记录一并清除。";
     return true;
 }
 
 // ======================== 消息 ========================
 
-MessageCenter& Platform::messages() { return messages_; }
+MessageStore& Platform::messages() { return *messages_; }
 
 bool Platform::sendPrivate(const ServiceBase& me, const std::string& friendId, const std::string& text,
                              std::string& msg) {
@@ -529,7 +545,7 @@ bool Platform::sendPrivate(const ServiceBase& me, const std::string& friendId, c
         msg = "对方开启了朋友验证，你还不是他（她）的朋友。请先发送好友申请，对方验证通过后，才能聊天。";
         return false;
     }
-    if (!messages_.postPrivate(me.type(), me.id(), friendId, line)) {
+    if (!messages_->postPrivate(me.type(), me.id(), friendId, line)) {
         msg = "消息保存失败，请检查 data 目录。";
         return false;
     }
@@ -549,7 +565,7 @@ bool Platform::sendGroupMessage(const ServiceBase& me, const Group& group, const
     }
     const std::string line = Util::lineText(text);
     if (!messageTextOk(line, msg)) return false;
-    if (!messages_.postGroup(me.type(), group.groupNo(), me.id(), line)) {
+    if (!messages_->postGroup(me.type(), group.groupNo(), me.id(), line)) {
         msg = "消息保存失败，请检查 data 目录。";
         return false;
     }
@@ -559,10 +575,10 @@ bool Platform::sendGroupMessage(const ServiceBase& me, const Group& group, const
 
 void Platform::unreadCount(const ServiceBase& me, int& privateCount, int& groupCount) const {
     privateCount = groupCount = 0;
-    for (const auto& kv : messages_.unreadPrivate(me.type(), me.id())) privateCount += kv.second;
+    for (const auto& kv : messages_->unreadPrivate(me.type(), me.id())) privateCount += kv.second;
     std::vector<int> groupNos;
     for (Group* g : groups_.groupsOf(me.type(), me.id())) groupNos.push_back(g->groupNo());
-    for (const auto& kv : messages_.unreadGroups(me.type(), me.id(), groupNos)) groupCount += kv.second;
+    for (const auto& kv : messages_->unreadGroups(me.type(), me.id(), groupNos)) groupCount += kv.second;
 }
 
 // ======================== 文本与对象的转换 ========================
@@ -741,7 +757,7 @@ void Platform::applyFriendship(ServiceType type, const std::string& requester, c
 // 按先后顺序重放消息文件中的社交记录。所有操作都可以重复执行而结果不变（加好友前先看是否已是好友……），
 // 所以本窗口自己写入的记录被再次应用也没有关系；多个窗口最终都得到与记录一致的结果
 void Platform::syncSocial() {
-    std::vector<Record> records = messages_.records("FVDBS");
+    std::vector<Record> records = messages_->records("FVDBS");
     std::map<int, const Record*> requests;
     for (const Record& r : records) {
         if (r.kind == 'F') requests[r.seq] = &r;
@@ -795,16 +811,16 @@ bool Platform::requestFriend(ServiceBase& me, const std::string& targetId, const
     const std::string myRemark = Util::toField(Util::lineText(remark));
     const bool stillFriend = other->friends().contains(me.id());   // 我曾单向删除对方，对方仍保留着我
     const bool direct = (stillFriend || !requiresVerification(*other)) && !isBlocked(me.type(), targetId, me.id());
-    messages_.appendRecord('F', me.type(), { targetId, me.id(), myRemark.empty() ? "-" : myRemark }, true, hello);
+    messages_->appendRecord('F', me.type(), { targetId, me.id(), myRemark.empty() ? "-" : myRemark }, true, hello);
     if (!direct) {   // 被对方拉黑时，申请照常“发出”，但对方看不到（与微信相同）
         msg = "好友申请已发送，等待 " + other->displayName() + " 验证。";
         return true;
     }
     // 不需要验证：自动通过（写一条处理人为 - 的“同意”记录，其他窗口据此同步）
-    std::vector<Record> sent = messages_.records("F");
+    std::vector<Record> sent = messages_->records("F");
     for (auto it = sent.rbegin(); it != sent.rend(); ++it) {
         if (it->service == me.type() && it->field(0) == targetId && it->field(1) == me.id()) {
-            messages_.appendRecord('V', me.type(), { std::to_string(it->seq), "A", "-", "-" }, false);
+            messages_->appendRecord('V', me.type(), { std::to_string(it->seq), "A", "-", "-" }, false);
             break;
         }
     }
@@ -816,7 +832,7 @@ bool Platform::requestFriend(ServiceBase& me, const std::string& targetId, const
 
 std::vector<FriendRequest> Platform::friendRequests(const ServiceBase& me) {
     syncSocial();
-    std::vector<Record> records = messages_.records("FV");
+    std::vector<Record> records = messages_->records("FV");
     std::map<int, FriendRequest::Status> status;
     for (const Record& r : records) {
         if (r.kind == 'V') status[toInt(r.field(0))] = r.field(1) == "A" ? FriendRequest::ACCEPTED : FriendRequest::REJECTED;
@@ -863,7 +879,7 @@ bool Platform::respondRequest(ServiceBase& me, int seq, bool accept, const std::
             return false;
         }
         const std::string myRemark = Util::toField(Util::lineText(remark));
-        messages_.appendRecord('V', me.type(), { std::to_string(seq), accept ? "A" : "X", me.id(), myRemark.empty() ? "-" : myRemark },
+        messages_->appendRecord('V', me.type(), { std::to_string(seq), accept ? "A" : "X", me.id(), myRemark.empty() ? "-" : myRemark },
                                false);
         if (accept) {
             applyFriendship(me.type(), r.from, me.id(), r.remark, myRemark);
@@ -887,7 +903,7 @@ bool Platform::setBlocked(const ServiceBase& me, const std::string& id, bool on,
         msg = on ? "对方已经在黑名单中。" : "对方不在黑名单中。";
         return false;
     }
-    messages_.appendRecord('B', me.type(), { me.id(), id, on ? "1" : "0" }, false);
+    messages_->appendRecord('B', me.type(), { me.id(), id, on ? "1" : "0" }, false);
     const std::string key = ServiceTypeHelper::code(me.type()) + " " + me.id() + " " + id;
     if (on) blocked_.insert(key);
     else blocked_.erase(key);
@@ -910,7 +926,7 @@ std::vector<std::string> Platform::blockedList(const ServiceBase& me) const {
 }
 
 void Platform::setVerification(const ServiceBase& me, bool on) {
-    messages_.appendRecord('S', me.type(), { me.id(), "verify", on ? "1" : "0" }, false);
+    messages_->appendRecord('S', me.type(), { me.id(), "verify", on ? "1" : "0" }, false);
     if (on) noVerify_.erase(ServiceTypeHelper::code(me.type()) + " " + me.id());
     else noVerify_.insert(ServiceTypeHelper::code(me.type()) + " " + me.id());
 }
@@ -932,7 +948,7 @@ bool Platform::canRevoke(const ServiceBase& me, const Message& message) const {
 
 bool Platform::revokeMessage(const ServiceBase& me, int seq, std::string& msg) {
     Message message(0, me.type(), false, "", "", "", "");
-    if (!messages_.findMessage(me.type(), seq, message)) {
+    if (!messages_->findMessage(me.type(), seq, message)) {
         msg = "消息不存在。";
         return false;
     }
@@ -942,7 +958,7 @@ bool Platform::revokeMessage(const ServiceBase& me, int seq, std::string& msg) {
                                                 : "你没有撤回这条消息的权限。";
         return false;
     }
-    if (!messages_.revoke(me.type(), seq, me.id())) {
+    if (!messages_->revoke(me.type(), seq, me.id())) {
         msg = "撤回失败，请检查 data 目录。";
         return false;
     }
@@ -974,9 +990,9 @@ std::vector<std::string> Platform::mentionsOf(const Group& group, const Message&
 int Platform::unreadMentions(const ServiceBase& me, int groupNo) const {
     const Group* g = groups_.find(me.type(), groupNo);
     if (!g) return 0;
-    const int mark = messages_.groupReadMark(me.type(), groupNo, me.id());
+    const int mark = messages_->groupReadMark(me.type(), groupNo, me.id());
     int count = 0;
-    for (const Message& m : messages_.groupHistory(me.type(), groupNo)) {
+    for (const Message& m : messages_->groupHistory(me.type(), groupNo)) {
         if (m.seq() <= mark || m.sender() == me.id()) continue;
         if (Util::contains(mentionsOf(*g, m), me.id())) ++count;
     }
@@ -1005,7 +1021,7 @@ bool Platform::postMoment(const ServiceBase& me, const std::string& text, const 
         msg = "请至少选择一位好友。";
         return false;
     }
-    if (!messages_.appendRecord('P', me.type(), { me.id(), range }, true, line)) {
+    if (!messages_->appendRecord('P', me.type(), { me.id(), range }, true, line)) {
         msg = "发表失败，请检查 data 目录。";
         return false;
     }
@@ -1016,7 +1032,7 @@ bool Platform::postMoment(const ServiceBase& me, const std::string& text, const 
 std::vector<Moment> Platform::moments(const ServiceBase& viewer, const std::string& author) {
     syncSocial();
     const ServiceType type = viewer.type();
-    const std::vector<Record> records = messages_.records("PLKYZ");
+    const std::vector<Record> records = messages_->records("PLKYZ");
     std::set<int> deletedPosts, deletedComments;
     for (const Record& r : records) {
         if (r.kind == 'Y') deletedPosts.insert(toInt(r.field(0)));
@@ -1075,7 +1091,7 @@ bool Platform::toggleLike(const ServiceBase& me, int seq, std::string& msg) {
     for (const Moment& m : moments(me)) {
         if (m.seq != seq) continue;
         const bool liked = m.likedBy(me.id());
-        messages_.appendRecord('L', me.type(), { std::to_string(seq), me.id(), liked ? "0" : "1" }, false);
+        messages_->appendRecord('L', me.type(), { std::to_string(seq), me.id(), liked ? "0" : "1" }, false);
         msg = liked ? "已取消赞。" : "已赞。";
         return true;
     }
@@ -1089,7 +1105,7 @@ bool Platform::commentMoment(const ServiceBase& me, int seq, const std::string& 
     if (!messageTextOk(line, msg)) return false;
     for (const Moment& m : moments(me)) {
         if (m.seq != seq) continue;
-        messages_.appendRecord('K', me.type(), { std::to_string(seq), me.id(), replyTo.empty() ? "-" : replyTo }, true, line);
+        messages_->appendRecord('K', me.type(), { std::to_string(seq), me.id(), replyTo.empty() ? "-" : replyTo }, true, line);
         msg = replyTo.empty() || replyTo == "-" ? "评论成功。" : "已回复 " + nickOf(me.type(), replyTo) + "。";
         return true;
     }
@@ -1098,13 +1114,13 @@ bool Platform::commentMoment(const ServiceBase& me, int seq, const std::string& 
 }
 
 bool Platform::deleteMoment(const ServiceBase& me, int seq, std::string& msg) {
-    for (const Record& r : messages_.records("P")) {
+    for (const Record& r : messages_->records("P")) {
         if (r.seq != seq || r.service != me.type()) continue;
         if (r.field(0) != me.id()) {
             msg = "只能删除自己的动态。";
             return false;
         }
-        messages_.appendRecord('Y', me.type(), { std::to_string(seq) }, false);
+        messages_->appendRecord('Y', me.type(), { std::to_string(seq) }, false);
         msg = "动态已删除。";
         return true;
     }
@@ -1113,7 +1129,7 @@ bool Platform::deleteMoment(const ServiceBase& me, int seq, std::string& msg) {
 }
 
 bool Platform::deleteComment(const ServiceBase& me, int commentSeq, std::string& msg) {
-    const std::vector<Record> records = messages_.records("PK");
+    const std::vector<Record> records = messages_->records("PK");
     for (const Record& c : records) {
         if (c.kind != 'K' || c.seq != commentSeq || c.service != me.type()) continue;
         std::string postAuthor;
@@ -1124,7 +1140,7 @@ bool Platform::deleteComment(const ServiceBase& me, int commentSeq, std::string&
             msg = "只能删除自己的评论，或自己动态下的评论。";
             return false;
         }
-        messages_.appendRecord('Z', me.type(), { std::to_string(commentSeq) }, false);
+        messages_->appendRecord('Z', me.type(), { std::to_string(commentSeq) }, false);
         msg = "评论已删除。";
         return true;
     }
@@ -1133,7 +1149,7 @@ bool Platform::deleteComment(const ServiceBase& me, int commentSeq, std::string&
 }
 
 std::vector<std::string> Platform::momentNotices(const ServiceBase& me, bool unreadOnly) {
-    const std::vector<Record> records = messages_.records("PLKYZ");
+    const std::vector<Record> records = messages_->records("PLKYZ");
     std::map<int, const Record*> posts;
     std::set<int> deletedPosts, deletedComments;
     for (const Record& r : records) {
@@ -1141,7 +1157,7 @@ std::vector<std::string> Platform::momentNotices(const ServiceBase& me, bool unr
         if (r.kind == 'Y') deletedPosts.insert(toInt(r.field(0)));
         if (r.kind == 'Z') deletedComments.insert(toInt(r.field(0)));
     }
-    const int mark = unreadOnly ? messages_.readMark(me.type(), "O", "-", me.id()) : 0;
+    const int mark = unreadOnly ? messages_->readMark(me.type(), "O", "-", me.id()) : 0;
     std::vector<std::string> result;
     for (auto it = records.rbegin(); it != records.rend(); ++it) {
         const Record& r = *it;
@@ -1162,10 +1178,10 @@ std::vector<std::string> Platform::momentNotices(const ServiceBase& me, bool unr
 
 void Platform::markMomentsRead(const ServiceBase& me) {
     int last = 0;
-    for (const Record& r : messages_.records("LK")) {
+    for (const Record& r : messages_->records("LK")) {
         if (r.service == me.type()) last = (std::max)(last, r.seq);
     }
-    messages_.markRead(me.type(), "O", "-", me.id(), last);
+    messages_->markRead(me.type(), "O", "-", me.id(), last);
 }
 
 // ======================== 群事件 → 系统提示 ========================
@@ -1188,5 +1204,5 @@ void Platform::onGroupEvent(const Group& group, GroupEvent event, const std::str
     case GroupEvent::ADMIN_SET: text = a + " 将 " + b + " 设为管理员"; break;
     case GroupEvent::ADMIN_UNSET: text = a + " 取消了 " + b + " 的管理员身份"; break;
     }
-    messages_.postGroup(type, group.groupNo(), Message::systemSender(), text);
+    messages_->postGroup(type, group.groupNo(), Message::systemSender(), text);
 }

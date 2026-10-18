@@ -378,7 +378,7 @@ void Menu::choosePrivateChat() {
 void Menu::privateChat(const string& friendId) {
     const ServiceType type = current_->type();
     const string me = current_->id();
-    MessageCenter& messages = platform_.messages();
+    MessageStore& messages = platform_.messages();
     chatWindow("与 " + platform_.displayName(type, friendId) + " 的私信", false,
                [&] { return messages.conversation(type, me, friendId); },
                [&](const string& text, string& msg) { return platform_.sendPrivate(*current_, friendId, text, msg); },
@@ -413,7 +413,7 @@ void Menu::groupChat(Group& group) {
     }
     const ServiceType type = group.service();
     const int groupNo = group.groupNo();
-    MessageCenter& messages = platform_.messages();
+    MessageStore& messages = platform_.messages();
     while (true) {
         cout << "\n---- 群聊天：" << groupNo << " " << group.name() << "（" << group.policy().modeName() << "，"
              << group.members().size() << " 人）----\n";

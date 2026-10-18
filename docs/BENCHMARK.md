@@ -14,6 +14,8 @@ build\bin\Release\IMChatBench.exe prepare bench_data 200    # 用业务接口注
 build\bin\Release\IMChatServer.exe --port 9600 --data bench_data --rate-limit 0   # 压测时关掉每条连接的速率限制
 build\bin\Release\IMChatBench.exe run --data bench_data --port 9600 --clients 200 --messages 250
 build\bin\Release\IMChatBench.exe run --data bench_data --port 9600 --clients 100 --messages 20 --group
+build\bin\Release\IMChatServer.exe --port 9600 --data bench_data --rate-limit 0 --storage sqlite   # 换成 SQLite 存储
+build\bin\Release\IMChatBench.exe store store_bench sqlite 10000                                   # 只测存储层
 ```
 
 ## 结果
@@ -93,9 +95,56 @@ build\bin\Release\IMChatBench.exe run --data bench_data --port 9600 --clients 10
 
 服务端默认使用 2 个 I/O 线程（`--io-threads 0` 可以退回单线程）。全部服务端、客户端集成测试在 3 个 I/O 线程下再跑一遍（CTest 中的 `IMChatUnitTests.MultiThreadedServer`）。乱序重复运行 30 次，没有出现失败。
 
+### 4. 存储：文本日志 vs SQLite
+
+消息存储抽象成 `MessageStore` 接口，有两种实现：
+- **文本日志** `MessageCenter`：只追加，增量读取；
+- **SQLite** `SqliteMessageStore`：服务端用 `--storage sqlite` 选用。
+
+同一组一致性测试分别验证两种实现，服务端和客户端的全部集成测试也在 SQLite 下再跑一遍。
+
+`IMChatBench store <目录> text|sqlite` 不经过网络，直接测存储层：
+
+| 操作（每次） | 文本日志 | SQLite（每次写入单独提交） |
+|---|---|---|
+| 保存一条私信 | 5.9 µs | 62 µs |
+| 取回刚保存的那条 | 2.8 µs | 4.3 µs |
+| 读社交记录 | 1.5 µs | 2.2 µs |
+
+SQLite 的写入慢在**每条消息一个事务**：`BEGIN` / `COMMIT` 和事务管理的固定开销远大于插入本身。为此做了两步优化。
+
+**批量提交（group commit）**
+- 第一次写入时打开事务，并在事件循环本轮的待办任务里安排一次提交，本轮的所有写入合并成一个事务。
+- 回执不能早于提交发出，否则服务端崩溃时，客户端已经收到回执的消息会丢失。所以存储批量提交时，所有发送都走发件箱，发件箱先提交、再发出回执和推送。"收到回执 = 已保存"这一点不变。
+
+**检查点（checkpoint）移出写入线程**
+- WAL 模式下，修改先写进 WAL 文件，再由检查点写回主库。默认的自动检查点会在某次提交时同步执行，那次写入就要多等几十毫秒。
+- 改为：后台线程用自己的连接，每 200 毫秒做一次被动检查点（不阻塞读写）。
+- 但写入一直不停时，后台检查点永远追不上最新的几页，WAL 不会从头复用：60,000 次写入后 WAL 长到了 **507 MB**。
+- 于是在 WAL 超过约 16 MB 时，由写入方在提交后自己补做一次被动检查点（通过 `sqlite3_wal_hook`）。大部分页后台已经写回，这次只剩几页；做完后下一次写入从 WAL 开头重新写。WAL 稳定在几十 MB 以内。
+- 中间还发现过一个 bug：后台连接打开后没有先执行任何语句，SQLite 认为它不在 WAL 模式，检查点什么也没做（返回的页数是 -1），数据一直堆在 WAL 里。修复前测得的"约 2.9 万条/秒"因此不可信，下表是修复后重测的结果。
+
+同一时段、同一台机器，2 个 I/O 线程：
+
+| 步骤 | SQLite 私信 200×250 | p99 |
+|---|---|---|
+| 每条消息单独提交 | 6,900 条/秒 | 73 ms |
+| 批量提交 | 15,500 条/秒 | 50 ms |
+| 批量提交 + 后台检查点 + WAL 回绕 | **约 22,000 条/秒** | 约 60 ms |
+| （对照）文本日志 | 49,000 条/秒 | 5.5 ms |
+
+群消息（100 人群，100×50，窗口 4）两种存储基本相同：文本日志 12,156 条/秒，SQLite 12,744 条/秒。瓶颈在推送，不在存储。
+
+结论与取舍：
+- SQLite 的私信吞吐约为文本日志的一半，p99 延迟更高。p99 的尖峰来自写入方补做的那次检查点：它要把数据刷到磁盘（fsync），这段时间业务线程在等。
+- 换来的是事务、索引查询、崩溃后数据库不损坏，以及以后切换到 MySQL 等数据库的接口基础。
+- 文本日志没有刷盘，断电时可能丢掉最后几条，但不会损坏文件（只追加）。
+- 默认仍用文本日志：单机模式的多个窗口要共享同一个文件，SQLite 文件只给服务端这一个进程使用。
+
 ## 局限与下一步
 
 - 业务处理仍在一个线程里。要再提高，需要把业务状态按用户或会话分片，交给多个业务线程；或者把磁盘写入移出业务线程。
-- 消息仍然逐条追加写文件，没有批量刷盘；换成 SQLite 并批量提交事务后，还要重新测一遍。
+- SQLite 的 p99 尖峰：可以把最后那次检查点也挪到后台线程，在业务线程空闲时用 RESTART 检查点完成 WAL 回绕；或者接受 `synchronous=OFF` 的风险（断电时数据库可能损坏）。
+- 不同时段的绝对数字会波动（同一份代码，笔记本的电源模式和温度不同时，相差可达 40%）。所以每张表都是在同一时段测得的，只比较同一张表里的数字。
 - `WSAPoll` 每轮都要把全部连接交给内核检查，连接数上万时会成为瓶颈；Linux 上换成 epoll（`Poller` 接口已经留好）。
 - 压测客户端和服务端在同一台机器上，会互相争用 CPU；跨机器的测试还没有做。

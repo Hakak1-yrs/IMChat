@@ -155,4 +155,6 @@ private:
     std::unordered_map<std::string, RecentMessages> recent_;           // "QQ 10001" → 最近的消息回执
     std::unordered_map<std::string, ApiHandler> api_;                  // op → 处理函数
     std::vector<std::pair<TcpConnection::Ptr, std::function<void()>>> outbox_;   // 本轮要交给 I/O 线程的操作
+    bool batchedStore_ = false;   // 消息存储批量提交（SQLite）
+    bool useOutbox_ = false;      // 发送先进发件箱：多线程时按线程分批；批量提交时保证先提交再发回执
 };

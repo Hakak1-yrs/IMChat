@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(IMChat VERSION 0.1.0 LANGUAGES CXX)
+project(IMChat VERSION 0.1.0 LANGUAGES C CXX)   # C: the SQLite amalgamation
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,11 +38,23 @@ if(IMCHAT_SANITIZE)
     target_link_options(imchat_options INTERFACE -fsanitize=${IMCHAT_SANITIZE})
 endif()
 
+# ---- SQLite (amalgamation, pinned by hash): the optional database message store ----
+include(FetchContent)
+FetchContent_Declare(sqlite
+    URL https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip
+    URL_HASH SHA256=77823cb110929c2bcb0f5d48e4833b5c59a8a6e40cdea3936b99e199dbbe5784
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(sqlite)
+add_library(imchat_sqlite STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
+target_include_directories(imchat_sqlite SYSTEM PUBLIC ${sqlite_SOURCE_DIR})
+target_compile_definitions(imchat_sqlite PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
+target_link_libraries(imchat_sqlite PUBLIC Threads::Threads)
+
 # ---- core: domain model, persistence, message log ----
 file(GLOB CORE_SOURCES CONFIGURE_DEPENDS src/core/*.cpp src/core/*.h)
 add_library(imchat_core STATIC ${CORE_SOURCES})
 target_include_directories(imchat_core PUBLIC src/core)
-target_link_libraries(imchat_core PUBLIC imchat_options Threads::Threads)
+target_link_libraries(imchat_core PUBLIC imchat_options imchat_sqlite Threads::Threads)
 if(WIN32)
     target_link_libraries(imchat_core PUBLIC bcrypt)
 else()
@@ -136,6 +148,11 @@ if(IMCHAT_BUILD_UNIT_TESTS)
              COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*
              WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
     set_tests_properties(IMChatUnitTests.MultiThreadedServer PROPERTIES ENVIRONMENT IMCHAT_TEST_IO_THREADS=3)
+    # ...and once more with messages stored in SQLite instead of the text log.
+    add_test(NAME IMChatUnitTests.SqliteStorage
+             COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*
+             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+    set_tests_properties(IMChatUnitTests.SqliteStorage PROPERTIES ENVIRONMENT IMCHAT_TEST_STORAGE=sqlite)
 endif()
 
 if(WIN32)

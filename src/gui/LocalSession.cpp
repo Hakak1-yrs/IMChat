@@ -129,7 +129,7 @@ std::vector<Conversation> LocalSession::recentChats() const {
         Conversation c = Conversation::groupChat(g->groupNo());
         found.emplace(c.key(), c);
     }
-    MessageCenter& center = platform_.messages();
+    MessageStore& center = platform_.messages();
     for (const Message& m : center.messagesFor(type, me, groupNos)) {   // 按时间先后，最后一条覆盖前面的
         Conversation c = m.isGroup() ? Conversation::groupChat(std::stoi(m.target()))
                                      : Conversation::privateChat(m.sender() == me ? m.target() : m.sender());
@@ -188,7 +188,7 @@ std::vector<Conversation> LocalSession::myGroups() const {
 }
 
 std::vector<Message> LocalSession::messages(const Conversation& c) const {
-    MessageCenter& center = platform_.messages();
+    MessageStore& center = platform_.messages();
     return c.isGroup ? center.groupHistory(current_->type(), c.groupNo)
                      : center.conversation(current_->type(), current_->id(), c.peerId);
 }
@@ -224,7 +224,7 @@ bool LocalSession::send(const Conversation& c, const std::string& text, std::str
 
 void LocalSession::markRead(const Conversation& c, int seq) {
     if (seq <= 0) return;
-    MessageCenter& center = platform_.messages();
+    MessageStore& center = platform_.messages();
     if (c.isGroup) center.markGroupRead(current_->type(), c.groupNo, current_->id(), seq);
     else center.markPrivateRead(current_->type(), current_->id(), c.peerId, seq);
 }

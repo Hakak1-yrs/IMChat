@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -25,8 +26,10 @@
 #include "Frame.h"
 #include "Group.h"
 #include "Log.h"
+#include "MessageCenter.h"
 #include "Packet.h"
 #include "Platform.h"
+#include "SqliteMessageStore.h"
 #include "TcpClient.h"
 #include "Util.h"
 
@@ -288,9 +291,39 @@ int run(Config config, const std::string& dataDir) {
     return finished && stats.pushes >= expectedPushes && stats.rejected == 0 ? 0 : 2;
 }
 
+// ======================== store：存储层微基准 ========================
+
+// 不经过网络，直接测消息存储：服务端处理一条私信时对存储做的操作（读社交记录、保存、取回刚保存的那条）
+int storeBench(std::string dataDir, const std::string& kind, int count) {
+    if (dataDir.back() != '/' && dataDir.back() != '\\') dataDir += '/';
+    std::error_code ec;
+    std::filesystem::create_directories(Util::pathOf(dataDir), ec);
+    std::unique_ptr<MessageStore> store;
+    if (kind == "sqlite") store = std::make_unique<SqliteMessageStore>(dataDir + "store_bench.db");
+    else store = std::make_unique<MessageCenter>(dataDir + "store_bench.txt");
+    Message last(0, ServiceType::QQ, false, "", "", "", "");
+    auto timeIt = [&](const char* name, const std::function<void(int)>& step) {
+        const auto start = Clock::now();
+        for (int i = 0; i < count; ++i) step(i);
+        const double us = std::chrono::duration<double, std::micro>(Clock::now() - start).count() / count;
+        std::printf("  %-28s %8.1f 微秒/次\n", name, us);
+    };
+    std::printf("%s，%d 次：\n", kind == "sqlite" ? "SQLite" : "文本日志", count);
+    timeIt("保存一条私信", [&](int i) { store->postPrivate(ServiceType::QQ, "10001", "10002", "压测 " + std::to_string(i)); });
+    timeIt("取回刚保存的那条（lastFrom）", [&](int) { store->lastFrom(ServiceType::QQ, "10001", last); });
+    timeIt("读社交记录（records）", [&](int) { store->records("FVDBS"); });
+    timeIt("保存 + 取回 + 读记录", [&](int i) {
+        store->records("FVDBS");
+        store->postPrivate(ServiceType::QQ, "10001", "10002", "压测 " + std::to_string(i));
+        store->lastFrom(ServiceType::QQ, "10001", last);
+    });
+    return 0;
+}
+
 void usage() {
     std::cout << "用法：\n"
                  "  IMChatBench prepare <数据目录> [用户数=200]\n"
+                 "  IMChatBench store <目录> text|sqlite [次数=10000]   存储层微基准\n"
                  "  IMChatBench run --data <数据目录> [--host 127.0.0.1] [--port 9000] [--clients 200] [--messages 100]\n"
                  "                  [--threads 4] [--window 1] [--group]\n";
 }
@@ -318,6 +351,7 @@ int main(int argc, char** argv) {
     }
     try {
         if (args[0] == "prepare" && args.size() >= 2) return prepare(args[1], args.size() >= 3 ? std::stoi(args[2]) : 200);
+        if (args[0] == "store" && args.size() >= 3) return storeBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
         if (args[0] == "run") {
             Config config;
             std::string dataDir;

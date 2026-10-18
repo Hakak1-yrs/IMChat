@@ -95,6 +95,7 @@ ChatServer::~ChatServer() {
     if (idleTimer_ != 0) loop_.cancel(idleTimer_);
     if (statsTimer_ != 0) loop_.cancel(statsTimer_);
     server_.stop();   // 先停掉 I/O 线程：它们的回调会访问下面这些成员，必须在成员销毁之前停
+    if (batchedStore_) platform_.messages().setCommitScheduler(nullptr);   // 提交剩下的写入，之后不再安排提交任务
 }
 
 bool ChatServer::start(std::string& error) {
@@ -102,6 +103,9 @@ bool ChatServer::start(std::string& error) {
     server_.setMessageCallback([this](const TcpConnection::Ptr& c, Buffer& b) { onMessage(c, b); });
     server_.setCloseCallback([this](const TcpConnection::Ptr& c) { onClose(c); });
     server_.setThreadCount(options_.ioThreads);
+    // 存储支持批量提交（SQLite）时打开：本轮的写入合并成一个事务，在本轮的待办任务里提交
+    batchedStore_ = platform_.messages().setCommitScheduler([this](std::function<void()> task) { loop_.queueInLoop(std::move(task)); });
+    useOutbox_ = options_.ioThreads > 0 || batchedStore_;
     if (!server_.listen(options_.ip, options_.port, error)) return false;
     idleTimer_ = loop_.runEvery(options_.idleCheckInterval, [this] { closeIdleConnections(); });
     statsTimer_ = loop_.runEvery(std::chrono::minutes(1), [this] { logStats(); });
@@ -825,7 +829,7 @@ json ChatServer::groupsList(ServiceBase& me) {
 
 json ChatServer::readsGet(ServiceBase& me) {
     // 已读位置：我在每个会话里读到哪一条；私信的对方读到哪一条（用于显示“已读”）
-    MessageCenter& center = platform_.messages();
+    MessageStore& center = platform_.messages();
     json mine = json::object(), peers = json::object(), groups = json::object();
     for (const Friend& f : me.friends().all()) {
         mine[f.id()] = center.readMark(me.type(), "P", f.id(), me.id());
@@ -903,7 +907,7 @@ ServiceBase* ChatServer::accountOf(const Session& session) const {
 }
 
 void ChatServer::deliver(const TcpConnection::Ptr& connection, std::string bytes) {
-    if (options_.ioThreads == 0) {   // 单线程：连接就在本线程，直接发（会在本轮结束时合并写出）
+    if (!useOutbox_) {   // 单线程且存储不批量提交：连接就在本线程，直接发（会在本轮结束时合并写出）
         connection->send(std::move(bytes));
         return;
     }
@@ -911,7 +915,7 @@ void ChatServer::deliver(const TcpConnection::Ptr& connection, std::string bytes
 }
 
 void ChatServer::post(const TcpConnection::Ptr& connection, std::function<void()> task) {
-    if (options_.ioThreads == 0) {
+    if (!useOutbox_) {
         task();
         return;
     }
@@ -922,6 +926,14 @@ void ChatServer::post(const TcpConnection::Ptr& connection, std::function<void()
 }
 
 void ChatServer::flushOutbox() {
+    // 存储批量提交时：先提交本轮的写入，再把回执、推送交出去——客户端收到回执时，消息一定已经保存
+    platform_.messages().commitPending();
+    if (options_.ioThreads == 0) {   // 单线程：连接都在本线程，按顺序直接执行
+        std::vector<std::pair<TcpConnection::Ptr, std::function<void()>>> items;
+        items.swap(outbox_);
+        for (auto& item : items) item.second();
+        return;
+    }
     std::unordered_map<EventLoop*, std::shared_ptr<std::vector<std::function<void()>>>> batches;
     for (auto& [connection, task] : outbox_) {
         auto& batch = batches[&connection->loop()];

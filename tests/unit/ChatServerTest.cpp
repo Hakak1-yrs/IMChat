@@ -12,12 +12,6 @@ using nlohmann::json;
 
 namespace {
 
-std::size_t occurrences(const std::string& text, const std::string& part) {
-    std::size_t count = 0;
-    for (std::size_t pos = text.find(part); pos != std::string::npos; pos = text.find(part, pos + part.size())) ++count;
-    return count;
-}
-
 json sendRequest(const std::string& clientMsgId, const std::string& to, const std::string& text, int reqId = 2) {
     return { { "reqId", reqId }, { "clientMsgId", clientMsgId }, { "to", to }, { "text", text } };
 }
@@ -25,8 +19,6 @@ json sendRequest(const std::string& clientMsgId, const std::string& to, const st
 json groupRequest(const std::string& clientMsgId, int groupNo, const std::string& text) {
     return { { "reqId", 2 }, { "clientMsgId", clientMsgId }, { "groupNo", groupNo }, { "text", text } };
 }
-
-std::string readText(const std::string& utf8Path) { return TestServer::readText(utf8Path); }
 
 }  // namespace
 
@@ -108,7 +100,7 @@ TEST_F(ChatServerTest, MessageIsAckedAndPushedToOnlineFriend) {
     EXPECT_EQ(push->body["from"], "10001");
     EXPECT_EQ(push->body["text"], "晚上一起写服务端 💻");
     EXPECT_EQ(push->body["seq"], ack->body["seq"]);
-    EXPECT_NE(readText(dataDir_ + "messages.txt").find("晚上一起写服务端 💻"), std::string::npos);   // 已持久化
+    EXPECT_EQ(server_->storedCount("10001", "10002", "晚上一起写服务端 💻"), 1u);   // 已保存
 }
 
 TEST_F(ChatServerTest, RetriedMessageIsStoredAndPushedOnce) {
@@ -125,7 +117,7 @@ TEST_F(ChatServerTest, RetriedMessageIsStoredAndPushedOnce) {
     EXPECT_EQ(second->body["reqId"], 3);   // 回执内容相同，但 reqId 对应各自的请求
     ASSERT_TRUE(li.receive());
     EXPECT_FALSE(li.receive(300));
-    EXPECT_EQ(occurrences(readText(dataDir_ + "messages.txt"), "只该出现一次"), 1u);
+    EXPECT_EQ(server_->storedCount("10001", "10002", "只该出现一次"), 1u);
 }
 
 TEST_F(ChatServerTest, BusinessRuleFailuresComeBackInAck) {

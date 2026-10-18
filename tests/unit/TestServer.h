@@ -20,9 +20,12 @@ public:
         // 设置了 IMCHAT_TEST_IO_THREADS 时，全部集成测试改在多线程模式下再跑一遍（见 CMakeLists.txt）
         const std::string threads = environment("IMCHAT_TEST_IO_THREADS");
         if (!threads.empty()) options.ioThreads = std::atoi(threads.c_str());
+        // IMCHAT_TEST_STORAGE=sqlite 时，消息存在 SQLite 里，全部集成测试再跑一遍
+        const Platform::Storage storage =
+            environment("IMCHAT_TEST_STORAGE") == "sqlite" ? Platform::Storage::SQLITE : Platform::Storage::TEXT;
         thread_ = std::make_unique<LoopThread>(
-            [this, options](EventLoop& loop) {
-                platform_ = std::make_unique<Platform>(dataDir_);
+            [this, options, storage](EventLoop& loop) {
+                platform_ = std::make_unique<Platform>(dataDir_, storage);
                 server_ = std::make_unique<ChatServer>(loop, *platform_, options);
                 std::string error;
                 if (!server_->start(error)) throw std::runtime_error(error);
@@ -38,6 +41,14 @@ public:
 
     std::uint16_t port() const { return port_; }
     std::size_t onlineCount() { return thread_->call([this] { return server_->onlineCount(); }); }
+    // a、b 之间保存下来的、内容为 text 的私信条数（通过存储接口查询，与用文本日志还是 SQLite 无关）
+    std::size_t storedCount(const std::string& a, const std::string& b, const std::string& text) {
+        return thread_->call([&] {
+            std::size_t count = 0;
+            for (const Message& m : platform_->messages().conversation(ServiceType::QQ, a, b)) count += m.text() == text ? 1 : 0;
+            return count;
+        });
+    }
 
     // 每个测试一份全新的演示数据，放在系统临时目录下（用户名含中文时，路径也含中文）
     static std::string freshDataDir(const std::string& name) {

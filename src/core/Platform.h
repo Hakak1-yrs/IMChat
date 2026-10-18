@@ -9,7 +9,7 @@
 #include "FriendRequest.h"
 #include "GroupListener.h"
 #include "GroupManager.h"
-#include "MessageCenter.h"
+#include "MessageStore.h"
 #include "Moment.h"
 #include "ServiceBase.h"
 #include "User.h"
@@ -22,7 +22,10 @@ class IndependentIdService;
 // 平台同时是群事件的监听者（GroupListener）：群里发生的事写成群聊记录中的系统提示
 class Platform : public GroupListener {
 public:
-    explicit Platform(const std::string& dataDir);
+    // 消息的存储方式：文本日志 messages.txt（默认，多个窗口可以共享），或 SQLite 数据库 messages.db（服务端可选）
+    enum class Storage { TEXT, SQLITE };
+
+    explicit Platform(const std::string& dataDir, Storage storage = Storage::TEXT);
     ~Platform();
     Platform(const Platform&) = delete;
     Platform& operator=(const Platform&) = delete;
@@ -88,7 +91,7 @@ public:
     bool dissolveGroup(const ServiceBase& me, int groupNo, std::string& msg);
 
     // ---- 消息：好友私信、群消息（保存在 messages.txt，只追加，两个窗口可以同时收发）----
-    MessageCenter& messages();
+    MessageStore& messages();
     // 只能给同一服务中的好友发私信
     bool sendPrivate(const ServiceBase& me, const std::string& friendId, const std::string& text, std::string& msg);
     // 只有群成员可以发群消息；是否被禁言由群的当前管理策略决定
@@ -168,7 +171,7 @@ private:
     std::vector<std::unique_ptr<ServiceBase>> accounts_;   // 拥有所有账号对象
     std::map<int, User> users_;
     GroupManager groups_;
-    MessageCenter messages_;
+    std::unique_ptr<MessageStore> messages_;
     std::set<std::string> blocked_;    // "服务 拉黑者 对方"
     std::set<std::string> noVerify_;   // "服务 账号"：加好友不需要验证（默认需要）
     int syncedLine_ = 0;               // 消息文件中已经应用到内存的记录位置

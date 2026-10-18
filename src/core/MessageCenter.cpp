@@ -12,6 +12,7 @@
 #include <set>
 #include <sstream>
 #include "Date.h"
+#include "RecordSchema.h"
 #include "Util.h"
 
 namespace {
@@ -19,34 +20,7 @@ namespace {
 const char* kHeader =
     "# 消息与社交事件记录（程序只在末尾追加，请不要手工修改；各类记录的格式见 MessageCenter.h）\r\n";
 
-// 事件记录的格式：字段个数、是否带时间、是否带行尾文字、是否占序号、哪些字段是账号（账号作废后记录随之作废）
-struct Schema {
-    char kind;
-    int fields;
-    bool timed;
-    bool text;
-    bool entity;
-    std::vector<int> accounts;
-};
-
-const Schema* schemaOf(char kind) {
-    static const Schema schemas[] = {
-        { 'F', 3, true, true, true, { 0, 1 } },     // 对方 申请人 备注
-        { 'V', 4, false, false, false, { 2 } },     // 申请序号 A/X 处理人 备注
-        { 'D', 2, false, false, false, { 0, 1 } },  // 删除者 被删除者
-        { 'B', 3, false, false, false, { 0, 1 } },  // 拉黑者 对方 1/0
-        { 'S', 3, false, false, false, { 0 } },     // 账号 verify 1/0
-        { 'P', 2, true, true, true, { 0 } },        // 作者 可见范围
-        { 'L', 3, false, false, true, { 1 } },      // 动态序号 点赞者 1/0
-        { 'K', 3, true, true, true, { 1 } },        // 动态序号 评论者 回复对象
-        { 'Y', 1, false, false, false, {} },        // 动态序号
-        { 'Z', 1, false, false, false, {} },        // 评论序号
-    };
-    for (const Schema& s : schemas) {
-        if (s.kind == kind) return &s;
-    }
-    return nullptr;
-}
+const RecordSchema* schemaOf(char kind) { return RecordSchema::of(kind); }
 
 std::string privateKey(ServiceType service, const std::string& peer, const std::string& reader) {
     return ServiceTypeHelper::code(service) + " P " + peer + " " + reader;
@@ -189,16 +163,15 @@ std::map<int, int> MessageCenter::unreadGroups(ServiceType service, const std::s
     return result;
 }
 
-void MessageCenter::markPrivateRead(ServiceType service, const std::string& me, const std::string& peer, int seq) {
-    markRead(service, "P", peer, me, seq);
-}
-
-void MessageCenter::markGroupRead(ServiceType service, int groupNo, const std::string& me, int seq) {
-    markRead(service, "G", std::to_string(groupNo), me, seq);
-}
-
-int MessageCenter::groupReadMark(ServiceType service, int groupNo, const std::string& me) const {
-    return readMark(service, "G", std::to_string(groupNo), me);
+MessageCenter::Snapshot MessageCenter::snapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const State& state = refresh();
+    Snapshot result;
+    for (const auto& entry : state.messages) result.messages.push_back(entry.second);
+    result.records = state.records;
+    result.readMarks = state.readMarks;
+    result.lastSeq = state.count;
+    return result;
 }
 
 // ======================== 事件记录 ========================
@@ -391,7 +364,7 @@ void MessageCenter::parseLine(State& state, const std::string& raw) const {
         state.revokedBy[code + " " + seq] = by;
         auto it = state.messages.find(std::atoi(seq.c_str()));
         if (it != state.messages.end() && ServiceTypeHelper::code(it->second.service()) == code) it->second.markRevoked(by);
-    } else if (const Schema* schema = schemaOf(kind)) {
+    } else if (const RecordSchema* schema = schemaOf(kind)) {
         Record r;
         r.kind = kind;
         r.line = state.lineNo;

@@ -3,10 +3,9 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include "Message.h"
-#include "Record.h"
+#include "MessageStore.h"
 
-// 消息中心：私信、群消息以及各种社交事件的存储与查询，数据保存在 data\messages.txt。
+// 消息存储的文本日志实现（接口见 MessageStore）：私信、群消息以及各种社交事件，数据保存在 data\messages.txt。
 //
 // 1. 文件只追加、不改写：两个程序窗口可以同时写，互不覆盖（与 ChatLog 相同，用 FILE_APPEND_DATA 方式写）；
 // 2. 解析结果缓存在内存里。每次查询前看一眼文件大小，只读取、解析上次之后新追加的部分（增量读取）：
@@ -28,41 +27,39 @@
 //      Y 服务 动态序号                                       删除动态
 //      Z 服务 评论序号                                       删除评论
 //    M、F、P、L、K 记录各占一个序号（按出现顺序从 1 编起），文件只追加，序号永远不会变
-class MessageCenter {
+class MessageCenter : public MessageStore {
 public:
     explicit MessageCenter(const std::string& filePath);
-    ~MessageCenter();
+    ~MessageCenter() override;
     MessageCenter(const MessageCenter&) = delete;
     MessageCenter& operator=(const MessageCenter&) = delete;
 
-    // ---- 消息（内容由调用者检查过；返回 false 表示写文件失败）----
-    bool postPrivate(ServiceType service, const std::string& from, const std::string& to, const std::string& text);
-    bool postGroup(ServiceType service, int groupNo, const std::string& from, const std::string& text);
-    bool revoke(ServiceType service, int seq, const std::string& by);
-    void clearAccount(ServiceType service, const std::string& id);
-    void clearGroup(ServiceType service, int groupNo);
-
-    // ---- 消息查询（按时间先后排列，撤回的消息带有撤回标记）----
-    std::vector<Message> conversation(ServiceType service, const std::string& a, const std::string& b) const;
-    std::vector<Message> groupHistory(ServiceType service, int groupNo) const;
-    // 与 me 有关的全部消息：me 收发的私信，以及 groupNos 这些群中的群消息（只读一次文件，图形界面的会话列表使用）
-    std::vector<Message> messagesFor(ServiceType service, const std::string& me, const std::vector<int>& groupNos) const;
-    bool findMessage(ServiceType service, int seq, Message& out) const;
-    // sender 最近发的一条消息（刚保存的那条：拿到它的序号和时间）。从最新的往前找，通常第一条就是
-    bool lastFrom(ServiceType service, const std::string& sender, Message& out) const;
-    // 未读：不计系统提示、撤回的消息和自己发的消息
-    std::map<std::string, int> unreadPrivate(ServiceType service, const std::string& me) const;   // 发送者 → 条数
-    std::map<int, int> unreadGroups(ServiceType service, const std::string& me, const std::vector<int>& groupNos) const;
-    void markPrivateRead(ServiceType service, const std::string& me, const std::string& peer, int seq);
-    void markGroupRead(ServiceType service, int groupNo, const std::string& me, int seq);
-    int groupReadMark(ServiceType service, int groupNo, const std::string& me) const;
-
-    // ---- 其他事件记录（好友申请、黑名单、朋友圈……），含义由 Platform 解释 ----
+    bool postPrivate(ServiceType service, const std::string& from, const std::string& to, const std::string& text) override;
+    bool postGroup(ServiceType service, int groupNo, const std::string& from, const std::string& text) override;
+    bool revoke(ServiceType service, int seq, const std::string& by) override;
+    void clearAccount(ServiceType service, const std::string& id) override;
+    void clearGroup(ServiceType service, int groupNo) override;
+    std::vector<Message> conversation(ServiceType service, const std::string& a, const std::string& b) const override;
+    std::vector<Message> groupHistory(ServiceType service, int groupNo) const override;
+    std::vector<Message> messagesFor(ServiceType service, const std::string& me, const std::vector<int>& groupNos) const override;
+    bool findMessage(ServiceType service, int seq, Message& out) const override;
+    bool lastFrom(ServiceType service, const std::string& sender, Message& out) const override;   // 从最新的往前找
+    std::map<std::string, int> unreadPrivate(ServiceType service, const std::string& me) const override;
+    std::map<int, int> unreadGroups(ServiceType service, const std::string& me, const std::vector<int>& groupNos) const override;
     bool appendRecord(char kind, ServiceType service, const std::vector<std::string>& fields, bool timed,
-                      const std::string& text = "");
-    std::vector<Record> records(const std::string& kinds) const;   // 指定类型的有效记录，按先后排列
-    int readMark(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader) const;
-    void markRead(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader, int seq);
+                      const std::string& text = "") override;
+    std::vector<Record> records(const std::string& kinds) const override;
+    int readMark(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader) const override;
+    void markRead(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader, int seq) override;
+
+    // 整个日志解析后的结果（迁移到 SQLite 时使用）：仍然有效的消息、记录（带原来的行号）、已读位置、已分配的最大序号
+    struct Snapshot {
+        std::vector<Message> messages;
+        std::vector<Record> records;
+        std::map<std::string, int> readMarks;
+        int lastSeq = 0;
+    };
+    Snapshot snapshot() const;
 
 private:
     // 已经解析过的部分：仍然有效的消息和事件记录、已读位置，以及继续解析需要的状态

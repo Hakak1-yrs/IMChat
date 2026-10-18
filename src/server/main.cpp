@@ -1,4 +1,4 @@
-// IMChat 服务端。用法：IMChatServer [--port 9000] [--data 数据目录] [--io-threads N] [--rate-limit N] [--idle-timeout 秒] [--verbose]
+// IMChat 服务端。用法：IMChatServer [--port 9000] [--data 数据目录] [--io-threads N] [--rate-limit N] [--storage text|sqlite] [--idle-timeout 秒] [--verbose]
 #include "ChatServer.h"   // 网络头文件（winsock2.h）必须在其他 Windows 头文件之前
 #include <csignal>
 #include <filesystem>
@@ -64,7 +64,7 @@ std::string loadTokenSecret(const std::string& dataDir) {
 }
 
 void printUsage() {
-    std::cout << "用法：IMChatServer [--port 端口，默认 9000] [--data 数据目录] [--io-threads I/O 线程数，默认 2，0 表示单线程] [--rate-limit 每条连接每秒最多发几条，默认 20，0 表示不限] [--idle-timeout 秒，默认 90] [--verbose]\n";
+    std::cout << "用法：IMChatServer [--port 端口，默认 9000] [--data 数据目录] [--io-threads I/O 线程数，默认 2，0 表示单线程] [--rate-limit 每条连接每秒最多发几条，默认 20，0 表示不限] [--storage 消息存储 text 或 sqlite，默认 text] [--idle-timeout 秒，默认 90] [--verbose]\n";
 }
 
 }  // namespace
@@ -78,6 +78,7 @@ int main(int argc, char** argv) {
     options.messageRate = 20;   // 正常聊天远远用不到；突发 50 条足够断线重连后补发积压的消息
     options.messageBurst = 50;
     std::string dataDir;
+    Platform::Storage storage = Platform::Storage::TEXT;
     const std::vector<std::string> args = arguments(argc, argv);
     for (std::size_t i = 0; i < args.size(); ++i) {
         const bool hasValue = i + 1 < args.size();
@@ -85,6 +86,8 @@ int main(int argc, char** argv) {
             if (args[i] == "--port" && hasValue) options.port = static_cast<std::uint16_t>(std::stoi(args[++i]));
             else if (args[i] == "--data" && hasValue) dataDir = args[++i];
             else if (args[i] == "--io-threads" && hasValue) options.ioThreads = std::stoi(args[++i]);
+            else if (args[i] == "--storage" && hasValue && (args[i + 1] == "text" || args[i + 1] == "sqlite"))
+                storage = args[++i] == "sqlite" ? Platform::Storage::SQLITE : Platform::Storage::TEXT;
             else if (args[i] == "--rate-limit" && hasValue) options.messageRate = std::stod(args[++i]);
             else if (args[i] == "--idle-timeout" && hasValue) options.idleTimeout = std::chrono::seconds(std::stoi(args[++i]));
             else if (args[i] == "--verbose") Log::setLevel(Log::Level::DEBUG);
@@ -102,7 +105,8 @@ int main(int argc, char** argv) {
     Log::info("数据目录：" + DataDir::absolute(dataDir));
 
     options.tokenSecret = loadTokenSecret(dataDir);
-    Platform platform(dataDir);
+    Platform platform(dataDir, storage);
+    Log::info(std::string("消息存储：") + (storage == Platform::Storage::SQLITE ? "SQLite（messages.db）" : "文本日志（messages.txt）"));
     EventLoop loop;
     ChatServer server(loop, platform, options);
     std::string error;
