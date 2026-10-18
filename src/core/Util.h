@@ -27,6 +27,7 @@ public:
     static std::string narrow(const std::wstring& text);              // UTF-16 → UTF-8
     static std::filesystem::path pathOf(const std::string& utf8);     // 路径可能含中文，必须经宽字符构造
     static size_t charCount(const std::string& utf8);                 // 字符数（不是字节数）
+    static bool isValidUtf8(const std::string& text);
     static std::string truncate(const std::string& utf8, size_t maxChars);   // 超长时截断并加“…”，不会截断半个字符
 
     // ---- 控制台输入（统一使用整行读取，避免 cin >> 与 getline 混用的问题）----

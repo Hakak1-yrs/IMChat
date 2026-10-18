@@ -9,6 +9,7 @@
 using SocketHandle = SOCKET;
 constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
 #else
+#include <sys/socket.h>   // accept、SOMAXCONN 等（使用网络库的代码会直接用到）
 using SocketHandle = int;
 constexpr SocketHandle kInvalidSocket = -1;
 #endif

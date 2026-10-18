@@ -1,10 +1,15 @@
 #include "Password.h"
+#include <vector>
+#ifdef _WIN32
 #include <windows.h>
 #include <bcrypt.h>
-#include <vector>
-
 #ifdef _MSC_VER
 #pragma comment(lib, "bcrypt.lib")   // 链接 Windows CNG 密码学库
+#endif
+#else
+#include <fstream>
+#include <random>
+#include "Sha256.h"
 #endif
 
 namespace {
@@ -21,6 +26,7 @@ std::string toHex(const unsigned char* data, size_t length) {
 
 }  // namespace
 
+#ifdef _WIN32
 std::string Password::sha256Hex(const std::string& data) {
     unsigned char digest[32] = {};
     // BCryptHash 一次完成“打开算法 → 计算摘要”，BCRYPT_SHA256_ALG_HANDLE 是系统预置的算法句柄
@@ -37,6 +43,24 @@ std::string Password::hmacSha256Hex(const std::string& key, const std::string& d
     return toHex(digest, sizeof(digest));
 }
 
+void Password::randomBytes(unsigned char* buffer, size_t size) {
+    // 使用系统推荐的密码学安全随机数生成器
+    BCryptGenRandom(nullptr, buffer, static_cast<ULONG>(size), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+}
+#else
+// 其他平台：摘要用可移植的 SHA-256 实现，随机数读系统的 /dev/urandom
+std::string Password::sha256Hex(const std::string& data) { return Sha256::hex(Sha256::hash(data)); }
+
+std::string Password::hmacSha256Hex(const std::string& key, const std::string& data) { return Sha256::hex(Sha256::hmac(key, data)); }
+
+void Password::randomBytes(unsigned char* buffer, size_t size) {
+    std::ifstream urandom("/dev/urandom", std::ios::binary);
+    if (urandom.read(reinterpret_cast<char*>(buffer), static_cast<std::streamsize>(size))) return;
+    std::random_device device;   // 没有 /dev/urandom 的系统
+    for (size_t i = 0; i < size; ++i) buffer[i] = static_cast<unsigned char>(device());
+}
+#endif
+
 bool Password::equalsConstantTime(const std::string& a, const std::string& b) {
     if (a.size() != b.size()) return false;
     unsigned char diff = 0;
@@ -46,8 +70,7 @@ bool Password::equalsConstantTime(const std::string& a, const std::string& b) {
 
 std::string Password::randomHex(size_t bytes) {
     std::vector<unsigned char> buffer(bytes);
-    // 使用系统推荐的密码学安全随机数生成器
-    BCryptGenRandom(nullptr, buffer.data(), static_cast<ULONG>(buffer.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    randomBytes(buffer.data(), buffer.size());
     return toHex(buffer.data(), buffer.size());
 }
 

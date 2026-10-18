@@ -79,11 +79,18 @@ private:
     void parseLine(State& state, const std::string& line) const;
     void clear(State& state, const std::string& code, const std::string& scope, const std::string& target) const;
     bool openFile() const;
+    bool fileSize(unsigned long long& size) const;
+    std::size_t readAt(unsigned long long position, char* buffer, std::size_t size) const;   // 返回读到的字节数
     static int markOf(const State& state, const std::string& key);
     bool append(const std::string& line);
 
     std::string filePath_;
     mutable std::mutex mutex_;   // 群聊室的网络线程和主线程可能同时读写
     mutable State state_;
-    mutable void* file_ = nullptr;   // 一直打开着的文件句柄（读 + 追加写），省去每次打开、关闭文件的开销
+    // 一直打开着的文件（读 + 追加写），省去每次打开、关闭文件的开销
+#ifdef _WIN32
+    mutable void* file_ = nullptr;
+#else
+    mutable int file_ = -1;
+#endif
 };

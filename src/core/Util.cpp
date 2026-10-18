@@ -1,19 +1,43 @@
 #include "Util.h"
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 
-// 从控制台读一行。控制台输入代码页设为 UTF-8 时，ReadFile（std::cin 走的路径）读中文会得到空字节，
-// 所以控制台用 ReadConsoleW 读 UTF-16 再转 UTF-8；输入被重定向（管道、文件）时照常用 std::getline
+namespace {
+
+// 解码 text[i] 开始的一个 UTF-8 字符：返回它占的字节数并写出码点；不是合法的 UTF-8 时返回 0
+int decodeUtf8(const std::string& text, size_t i, unsigned long& code) {
+    const unsigned char c = static_cast<unsigned char>(text[i]);
+    const int extra = c < 0x80 ? 0 : (c & 0xE0) == 0xC0 ? 1 : (c & 0xF0) == 0xE0 ? 2 : (c & 0xF8) == 0xF0 ? 3 : -1;
+    if (extra < 0 || i + extra >= text.size()) return 0;
+    code = extra == 0 ? c : (c & (0x3Fu >> extra));
+    for (int k = 1; k <= extra; ++k) {
+        const unsigned char next = static_cast<unsigned char>(text[i + k]);
+        if ((next & 0xC0) != 0x80) return 0;
+        code = (code << 6) | (next & 0x3F);
+    }
+    return extra + 1;
+}
+
+}  // namespace
+
+// 从控制台读一行。Windows 控制台输入代码页设为 UTF-8 时，ReadFile（std::cin 走的路径）读中文会得到空字节，
+// 所以控制台用 ReadConsoleW 读 UTF-16 再转 UTF-8；输入被重定向（管道、文件）时，以及其他平台上，照常用 std::getline
 bool Util::getLine(std::string& line) {
+#ifdef _WIN32
     HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
     DWORD mode = 0;
     if (!GetConsoleMode(input, &mode)) {
+#endif
         if (!std::getline(std::cin, line)) return false;
         if (line.compare(0, 3, "\xEF\xBB\xBF") == 0) line.erase(0, 3);   // 重定向的输入文件可能以 BOM 开头
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         return true;
+#ifdef _WIN32
     }
     std::wstring text;
     wchar_t buffer[256];
@@ -26,6 +50,7 @@ bool Util::getLine(std::string& line) {
     while (!text.empty() && (text.back() == L'\n' || text.back() == L'\r')) text.pop_back();
     line = narrow(text);
     return true;
+#endif
 }
 
 std::vector<std::string> Util::split(const std::string& s, char sep) {
@@ -132,6 +157,7 @@ bool Util::containsText(const std::string& text, const std::string& keyword) {
     return text.find(keyword) != std::string::npos;
 }
 
+#ifdef _WIN32
 std::wstring Util::widen(const std::string& utf8) {
     if (utf8.empty()) return L"";
     const int length = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
@@ -149,6 +175,69 @@ std::string Util::narrow(const std::wstring& text) {
 }
 
 std::filesystem::path Util::pathOf(const std::string& utf8) { return std::filesystem::path(widen(utf8)); }
+#else
+// 其他平台上 wchar_t 通常是 32 位（UTF-32，如 Linux），也可能是 16 位（UTF-16，如 Cygwin）：
+// 按 UTF-8 的规则逐个字符转换，16 位时超出基本平面的字符用代理对表示；非法字节按 U+FFFD 处理
+std::wstring Util::widen(const std::string& utf8) {
+    std::wstring result;
+    for (size_t i = 0; i < utf8.size();) {
+        unsigned long code = 0;
+        const int length = decodeUtf8(utf8, i, code);
+        if (length == 0) code = 0xFFFD;
+        if (sizeof(wchar_t) == 2 && code >= 0x10000) {
+            code -= 0x10000;
+            result += static_cast<wchar_t>(0xD800 + (code >> 10));
+            result += static_cast<wchar_t>(0xDC00 + (code & 0x3FF));
+        } else {
+            result += static_cast<wchar_t>(code);
+        }
+        i += length > 0 ? static_cast<size_t>(length) : 1;
+    }
+    return result;
+}
+
+std::string Util::narrow(const std::wstring& text) {
+    std::string result;
+    for (size_t i = 0; i < text.size(); ++i) {
+        unsigned long c = static_cast<unsigned long>(text[i]) & (sizeof(wchar_t) == 2 ? 0xFFFFul : 0xFFFFFFFFul);
+        if (c >= 0xD800 && c < 0xDC00 && i + 1 < text.size()) {   // 代理对（16 位 wchar_t）
+            const unsigned long low = static_cast<unsigned long>(text[i + 1]) & 0xFFFF;
+            if (low >= 0xDC00 && low < 0xE000) {
+                c = 0x10000 + ((c - 0xD800) << 10) + (low - 0xDC00);
+                ++i;
+            }
+        }
+        if (c < 0x80) {
+            result += static_cast<char>(c);
+        } else if (c < 0x800) {
+            result += static_cast<char>(0xC0 | (c >> 6));
+            result += static_cast<char>(0x80 | (c & 0x3F));
+        } else if (c < 0x10000) {
+            result += static_cast<char>(0xE0 | (c >> 12));
+            result += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (c & 0x3F));
+        } else {
+            result += static_cast<char>(0xF0 | (c >> 18));
+            result += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+            result += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (c & 0x3F));
+        }
+    }
+    return result;
+}
+
+std::filesystem::path Util::pathOf(const std::string& utf8) { return std::filesystem::path(utf8); }   // 路径本来就是 UTF-8
+#endif
+
+bool Util::isValidUtf8(const std::string& text) {
+    for (size_t i = 0; i < text.size();) {
+        unsigned long code = 0;
+        const int length = decodeUtf8(text, i, code);
+        if (length == 0) return false;
+        i += static_cast<size_t>(length);
+    }
+    return true;
+}
 
 size_t Util::charCount(const std::string& utf8) {
     // 只数每个字符的首字节；后续字节的形式都是 10xxxxxx

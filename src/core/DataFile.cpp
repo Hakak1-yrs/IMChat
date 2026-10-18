@@ -1,5 +1,13 @@
 #include "DataFile.h"
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <iconv.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstdio>
+#endif
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -10,12 +18,10 @@ namespace fs = std::filesystem;
 namespace {
 
 // GBK 中文几乎不可能恰好构成合法的 UTF-8 序列，所以“不是合法 UTF-8”就可以认定是旧版本的 GBK 文件
-bool isValidUtf8(const std::string& text) {
-    return text.empty() ||
-           MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0) > 0;
-}
+bool isValidUtf8(const std::string& text) { return Util::isValidUtf8(text); }
 
 std::string gbkToUtf8(const std::string& text) {
+#ifdef _WIN32
     int wideLength = MultiByteToWideChar(936, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
     std::wstring wide(wideLength, L'\0');
     MultiByteToWideChar(936, 0, text.data(), static_cast<int>(text.size()), &wide[0], wideLength);
@@ -23,6 +29,29 @@ std::string gbkToUtf8(const std::string& text) {
     std::string result(length, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideLength, &result[0], length, nullptr, nullptr);
     return result;
+#else
+    iconv_t cd = iconv_open("UTF-8", "GBK");
+    if (cd == reinterpret_cast<iconv_t>(-1)) return text;   // 系统不支持 GBK：原样返回
+    std::string result(text.size() * 3 / 2 + 16, '\0');
+    char* in = const_cast<char*>(text.data());
+    char* out = &result[0];
+    size_t inLeft = text.size(), outLeft = result.size();
+    while (inLeft > 0) {
+        if (iconv(cd, &in, &inLeft, &out, &outLeft) != static_cast<size_t>(-1)) continue;
+        if (errno == E2BIG) {   // 输出缓冲区不够：加大后接着转
+            const size_t used = static_cast<size_t>(out - result.data());
+            result.resize(result.size() * 2);
+            out = &result[0] + used;
+            outLeft = result.size() - used;
+        } else {   // 非法字节：跳过一个
+            ++in;
+            --inLeft;
+        }
+    }
+    iconv_close(cd);
+    result.resize(static_cast<size_t>(out - result.data()));
+    return result;
+#endif
 }
 
 // 读入整个文件并统一成程序内部的形式；文件不存在（或打不开）返回 false
@@ -94,6 +123,7 @@ bool DataFile::adoptIfSame(const std::string& text) {
 bool DataFile::prepare(const std::string& text) {
     std::error_code ec;
     if (!path_.parent_path().empty()) fs::create_directories(path_.parent_path(), ec);   // data 目录不存在时自动创建
+#ifdef _WIN32
     HANDLE file = CreateFileW(tempPath_.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;
@@ -101,6 +131,12 @@ bool DataFile::prepare(const std::string& text) {
     bool ok = WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) &&
               written == text.size() && FlushFileBuffers(file);
     CloseHandle(file);
+#else
+    const int fd = ::open(tempPath_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return false;
+    bool ok = ::write(fd, text.data(), text.size()) == static_cast<ssize_t>(text.size()) && ::fsync(fd) == 0;   // fsync：真正写到磁盘
+    ::close(fd);
+#endif
     if (!ok) {
         fs::remove(tempPath_, ec);
         return false;
@@ -111,7 +147,12 @@ bool DataFile::prepare(const std::string& text) {
 
 bool DataFile::commit() {
     // 同一磁盘上的替换是一次原子操作：要么还是旧文件，要么已是完整的新文件
-    if (!MoveFileExW(tempPath_.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+#ifdef _WIN32
+    const bool replaced = MoveFileExW(tempPath_.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    const bool replaced = std::rename(tempPath_.c_str(), path_.c_str()) == 0;   // POSIX 的 rename 同样是原子替换
+#endif
+    if (!replaced) {
         discard();
         return false;
     }

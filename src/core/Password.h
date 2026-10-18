@@ -2,7 +2,7 @@
 #include <string>
 
 // 密码工具类：不保存明文密码，而是保存“随机盐 + SHA-256 摘要”。
-// 摘要计算直接调用 Windows 自带的 BCrypt（CNG）密码学接口，不自己实现算法。
+// 摘要计算在 Windows 上直接调用系统自带的 BCrypt（CNG）密码学接口；其他平台用经过标准测试向量验证的 Sha256。
 // 存储格式：盐(32位十六进制)$摘要(64位十六进制)
 class Password {
 public:
@@ -16,4 +16,5 @@ public:
 
 private:
     static std::string sha256Hex(const std::string& data);
+    static void randomBytes(unsigned char* buffer, size_t size);
 };

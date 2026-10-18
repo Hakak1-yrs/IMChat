@@ -11,8 +11,8 @@ enum IoEvent : unsigned {
 };
 
 // I/O 多路复用的抽象接口，事件循环只依赖这个接口。
-// 现在的实现是 PollPoller（Windows 的 WSAPoll 与 POSIX 的 poll 用法相同，一份代码两边通用）；
-// Linux 上可以再实现 EpollPoller，事件循环不需要任何改动
+// 两种实现：PollPoller（Windows 的 WSAPoll 与 POSIX 的 poll 用法相同，一份代码两边通用），
+// EpollPoller（Linux 默认使用）。事件循环只认这个接口，换实现不需要任何改动
 class Poller {
 public:
     struct Event {
@@ -27,4 +27,5 @@ public:
     virtual void poll(int timeoutMs, std::vector<Event>& active) = 0;
 
     static std::unique_ptr<Poller> create();   // 当前平台默认的实现
+    static const char* defaultName();          // "epoll" / "poll" / "WSAPoll"（日志里显示）
 };

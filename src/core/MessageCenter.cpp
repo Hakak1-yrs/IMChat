@@ -1,5 +1,11 @@
 #include "MessageCenter.h"
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -58,7 +64,11 @@ bool countsAsUnread(const Message& m, const std::string& me) { return !m.isSyste
 MessageCenter::MessageCenter(const std::string& filePath) : filePath_(filePath) {}
 
 MessageCenter::~MessageCenter() {
+#ifdef _WIN32
     if (file_) CloseHandle(file_);
+#else
+    if (file_ >= 0) ::close(file_);
+#endif
 }
 
 // ======================== 写入 ========================
@@ -222,6 +232,7 @@ int MessageCenter::markOf(const State& state, const std::string& key) {
 // ======================== 读取与解析（增量） ========================
 
 bool MessageCenter::openFile() const {
+#ifdef _WIN32
     if (file_) return true;
     // 读 + 追加写：FILE_APPEND_DATA（不含 FILE_WRITE_DATA）保证写入永远接在文件末尾，
     // 多个窗口、多个进程各自打开着也互不覆盖；共享读写，别的程序照样可以打开它
@@ -242,27 +253,71 @@ bool MessageCenter::openFile() const {
     }
     file_ = file;
     return true;
+#else
+    if (file_ >= 0) return true;
+    // 读 + 追加写：O_APPEND 保证每次 write 都原子地接在文件末尾，多个进程各自打开着也互不覆盖
+    auto open = [&] { return ::open(filePath_.c_str(), O_RDWR | O_APPEND | O_CREAT, 0644); };
+    int fd = open();
+    if (fd < 0) {   // data 目录还不存在时先创建
+        std::error_code ec;
+        std::filesystem::create_directories(Util::pathOf(filePath_).parent_path(), ec);
+        fd = open();
+        if (fd < 0) return false;
+    }
+    struct stat info {};
+    if (::fstat(fd, &info) == 0 && info.st_size == 0) {   // 新建的（空）文件先写说明
+        const ssize_t written = ::write(fd, kHeader, std::strlen(kHeader));
+        (void)written;
+    }
+    file_ = fd;
+    return true;
+#endif
+}
+
+bool MessageCenter::fileSize(unsigned long long& size) const {
+#ifdef _WIN32
+    LARGE_INTEGER value{};
+    if (!GetFileSizeEx(file_, &value)) return false;
+    size = static_cast<unsigned long long>(value.QuadPart);
+#else
+    // 用 lseek 到末尾取大小，而不是 fstat：后者在有的平台上（如 Cygwin）要毫秒级，每次查询都调用就成了瓶颈。
+    // 文件以 O_APPEND 打开、读取用 pread，文件指针的位置对读写都没有影响
+    const off_t end = ::lseek(file_, 0, SEEK_END);
+    if (end < 0) return false;
+    size = static_cast<unsigned long long>(end);
+#endif
+    return true;
+}
+
+std::size_t MessageCenter::readAt(unsigned long long position, char* buffer, std::size_t size) const {
+    // 指定位置读取（Windows 用 OVERLAPPED，POSIX 用 pread），不移动文件指针，不影响追加写
+    size = (std::min)(size, static_cast<std::size_t>(1) << 24);
+#ifdef _WIN32
+    OVERLAPPED at{};
+    at.Offset = static_cast<DWORD>(position & 0xFFFFFFFFu);
+    at.OffsetHigh = static_cast<DWORD>(position >> 32);
+    DWORD read = 0;
+    if (!ReadFile(file_, buffer, static_cast<DWORD>(size), &read, &at)) return 0;
+    return read;
+#else
+    const ssize_t read = ::pread(file_, buffer, size, static_cast<off_t>(position));
+    return read > 0 ? static_cast<std::size_t>(read) : 0;
+#endif
 }
 
 const MessageCenter::State& MessageCenter::refresh() const {
     if (!openFile()) return state_;
-    LARGE_INTEGER size{};
-    if (!GetFileSizeEx(file_, &size)) return state_;
-    const unsigned long long total = static_cast<unsigned long long>(size.QuadPart);
+    unsigned long long total = 0;
+    if (!fileSize(total)) return state_;
     if (total < state_.offset) state_ = State{};   // 文件变短了（被替换成了别的数据）：从头重新解析
     if (total == state_.offset) return state_;
 
-    // 只读新追加的部分。用 OVERLAPPED 指定读取位置，不影响追加写
+    // 只读新追加的部分
     std::string chunk(static_cast<std::size_t>(total - state_.offset), '\0');
     std::size_t got = 0;
     while (got < chunk.size()) {
-        OVERLAPPED at{};
-        const unsigned long long position = state_.offset + got;
-        at.Offset = static_cast<DWORD>(position & 0xFFFFFFFFu);
-        at.OffsetHigh = static_cast<DWORD>(position >> 32);
-        DWORD read = 0;
-        const DWORD want = static_cast<DWORD>((std::min)(chunk.size() - got, static_cast<std::size_t>(1) << 24));
-        if (!ReadFile(file_, &chunk[got], want, &read, &at) || read == 0) break;
+        const std::size_t read = readAt(state_.offset + got, &chunk[got], chunk.size() - got);
+        if (read == 0) break;
         got += read;
     }
     // 只处理完整的行：别的进程可能正写到一半，没有换行符的尾巴留到下次
@@ -363,8 +418,12 @@ void MessageCenter::parseLine(State& state, const std::string& raw) const {
 bool MessageCenter::append(const std::string& line) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!openFile()) return false;
-    // 一次 WriteFile 写完整的一行：以 FILE_APPEND_DATA 方式打开，由系统保证整行接在文件末尾，不会和别的进程交错
+    // 一次写完整的一行：以追加方式打开，由系统保证整行接在文件末尾，不会和别的进程交错
     const std::string data = line + "\r\n";
+#ifdef _WIN32
     DWORD written = 0;
     return WriteFile(file_, data.data(), static_cast<DWORD>(data.size()), &written, nullptr) && written == data.size();
+#else
+    return ::write(file_, data.data(), data.size()) == static_cast<ssize_t>(data.size());
+#endif
 }

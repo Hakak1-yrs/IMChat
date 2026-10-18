@@ -9,6 +9,7 @@
 #include "Log.h"
 #include "Password.h"
 #include "Platform.h"
+#include "Poller.h"
 #include "User.h"
 #include "ServiceType.h"
 #include "Util.h"
@@ -104,7 +105,7 @@ bool ChatServer::start(std::string& error) {
     if (!server_.listen(options_.ip, options_.port, error)) return false;
     idleTimer_ = loop_.runEvery(options_.idleCheckInterval, [this] { closeIdleConnections(); });
     statsTimer_ = loop_.runEvery(std::chrono::minutes(1), [this] { logStats(); });
-    Log::info("IMChatServer 正在监听 " + options_.ip + ":" + std::to_string(server_.port()) +
+    Log::info("IMChatServer 正在监听 " + options_.ip + ":" + std::to_string(server_.port()) + "（" + Poller::defaultName() + "）" +
               (options_.ioThreads > 0 ? "，I/O 线程 " + std::to_string(options_.ioThreads) + " 个" : ""));
     return true;
 }

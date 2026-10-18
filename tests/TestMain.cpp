@@ -1,7 +1,10 @@
 // 自动测试：直接调用业务类的接口，逐条检查题目要求和设计约定，不需要手工在菜单里输入。
 // 每个测试从同一份固定的基线数据开始，在 test_tmp 目录下运行，不会改动 data 目录中的演示数据。
 // 运行方式：ctest，或直接运行生成的 IMChatTests.exe。
+#ifdef _WIN32
 #include <windows.h>
+#endif
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -48,7 +51,7 @@ std::string capture(Action action) {
 
 bool contains(const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; }
 
-const std::string kRoot = "test_tmp\\";
+const std::string kRoot = "test_tmp/";   // 正斜杠：Windows 和其他平台都认
 
 // ---- 基线数据：与发布的演示数据相同（密码写成明文 123456，加载时会自动转为加密记录）----
 const char* kUsers = R"(# 用户编号 姓名
@@ -147,7 +150,7 @@ std::string readFile(const std::string& path) {
 
 // 新建一个只属于本测试的数据目录，并写入基线数据
 std::string freshDir(const std::string& name) {
-    std::string dir = kRoot + name + "\\";
+    std::string dir = kRoot + name + "/";
     std::error_code ec;
     fs::remove_all(Util::pathOf(dir), ec);
     fs::create_directories(Util::pathOf(dir), ec);
@@ -572,7 +575,7 @@ void testUtf8Text() {
 }
 
 void testMissingDataDir() {
-    std::string dir = kRoot + "missing\\sub\\";
+    std::string dir = kRoot + "missing/sub/";
     std::error_code ec;
     fs::remove_all(kRoot + "missing", ec);
     std::string msg;
@@ -953,7 +956,9 @@ void run(const std::string& name, void (*test)()) {
 }  // namespace
 
 int main() {
+#ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
+#endif
     setvbuf(stdout, nullptr, _IONBF, 0);   // 不缓冲：万一某项测试崩溃，之前的结果也已经输出
     std::error_code ec;
     fs::remove_all(kRoot, ec);

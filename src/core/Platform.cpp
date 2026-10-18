@@ -47,7 +47,7 @@ int toInt(const std::string& s) {
 // “yyyy-mm-dd hh:mm:ss”距现在多少秒（用于“2 分钟内可以撤回”）
 double secondsSince(const std::string& time) {
     std::tm t{};
-    if (sscanf_s(time.c_str(), "%d-%d-%d %d:%d:%d", &t.tm_year, &t.tm_mon, &t.tm_mday, &t.tm_hour, &t.tm_min, &t.tm_sec) != 6)
+    if (std::sscanf(time.c_str(), "%d-%d-%d %d:%d:%d", &t.tm_year, &t.tm_mon, &t.tm_mday, &t.tm_hour, &t.tm_min, &t.tm_sec) != 6)
         return 1e9;
     t.tm_year -= 1900;
     t.tm_mon -= 1;

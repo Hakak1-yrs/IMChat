@@ -43,7 +43,7 @@
                                     ◀──────────── 发件箱：本轮要发的数据按 I/O 线程分批交回 ────────────┘
 ```
 
-- **Reactor**：`EventLoop` 在一个线程里循环执行"等待 I/O 事件 → 分发给连接 → 执行定时器 → 执行其他线程投递的任务"。I/O 多路复用抽象成 `Poller` 接口。目前的实现基于 `poll`（Windows 上是 `WSAPoll`），一份代码两个平台通用；以后在 Linux 上加 `EpollPoller`，事件循环不用改。
+- **Reactor**：`EventLoop` 在一个线程里循环执行"等待 I/O 事件 → 分发给连接 → 执行定时器 → 执行其他线程投递的任务"。I/O 多路复用抽象成 `Poller` 接口，有两种实现：Linux 上默认用 `EpollPoller`（水平触发），其他平台用 `PollPoller`（Windows 上是 `WSAPoll`）。事件循环和连接的代码只认接口，换实现不用改。
 - **多线程（one loop per thread）**：
   - 主循环只 `accept`，新连接轮转分给 N 个 I/O 线程（默认 2 个）；
   - I/O 线程负责收发、切帧、解析 JSON，把一批请求一次交给业务线程；
@@ -107,7 +107,7 @@ build\bin\Release\IMChatCli.exe --host 192.168.1.10 --port 9000 QQ 10002 123456
 
 ## 构建与运行
 
-需要 Windows 10/11 和 Visual Studio 2022（带"使用 C++ 的桌面开发"）。
+**Windows**：需要 Windows 10/11 和 Visual Studio 2022（带"使用 C++ 的桌面开发"）。也可以用 MinGW 的 GCC 编译。
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -119,7 +119,26 @@ build\bin\Release\IMChatClient.exe       # 图形客户端
 build\bin\Release\IMChatConsole.exe      # 控制台客户端
 ```
 
-也可以直接用 VS 2022 "打开文件夹"。演示账号的密码都是 `123456`，例如 QQ `10001`、微信 `wx2001`。同时打开多个客户端并登录不同账号，就能互相聊天：
+**Linux**：服务端、命令行客户端、压测工具和全部测试可以在 Linux 上编译运行（图形客户端和控制台客户端只支持 Windows）。需要 GCC 或 Clang，以及 CMake 3.20 以上。
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build
+build/bin/IMChatServer --port 9000 --data data_demo   # Linux 上使用 epoll；IMCHAT_POLLER=poll 改用 poll
+```
+
+可以用 `-DIMCHAT_SANITIZE=address,undefined` 或 `-DIMCHAT_SANITIZE=thread` 打开消毒器。
+
+移植时，平台相关的部分都集中在少数几处：
+- 文件（`DataFile`、`MessageCenter`、`ChatLog`）：Windows API 与 POSIX 的 `open` / `pread` / `fsync` / `rename`；
+- 编码：旧版 GBK 数据文件的转换，Windows 用 `MultiByteToWideChar`，其他平台用 iconv；
+- 密码学：Windows 用 CNG，其他平台用经过标准测试向量验证的 `Sha256`；
+- 网络库：`SocketOps` 和 `Poller`。
+
+Windows（MSVC、MinGW GCC）和 MSYS2 的 POSIX 环境下，全部测试都已通过。
+
+在 Windows 上也可以直接用 VS 2022 "打开文件夹"。演示账号的密码都是 `123456`，例如 QQ `10001`、微信 `wx2001`。同时打开多个客户端并登录不同账号，就能互相聊天：
 
 ```powershell
 build\bin\Release\IMChatClient.exe --login QQ 10002 123456
@@ -150,7 +169,9 @@ docs/          协议、路线图、截图
 ctest --test-dir build -C Release
 ```
 
-每次推送都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Windows 上编译（警告视为错误）、运行全部测试、乱序重复运行单元测试，并跑一遍私信和群消息的压测，确认推送一条不少。
+每次推送都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）检查：
+- **Windows**：编译（警告视为错误）、运行全部测试、乱序重复运行单元测试，并跑一遍私信和群消息的压测，确认推送一条不少；
+- **Linux**：GCC 编译和全部测试（epoll），网络相关测试再用 poll 跑一遍，并做压测冒烟测试；另有 AddressSanitizer + UndefinedBehaviorSanitizer、ThreadSanitizer 两个任务。
 
 - `tests/TestMain.cpp`（356 项检查）：直接调用业务接口，每个用例从同一份基线数据开始，在独立的临时目录中运行。覆盖账号绑定规则、两种群模式的权限、模式切换不损坏数据、保存与重新加载、加载时修复不一致的数据、两个窗口同时修改时的冲突处理、编码转换、含中文的数据路径、好友申请、撤回、朋友圈可见范围等。
 - `tests/unit/`（GoogleTest，72 个用例；服务端和客户端的集成测试还会在 3 个 I/O 线程下再跑一遍）：

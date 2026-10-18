@@ -35,3 +35,48 @@ jobs:
           $groupExit = $LASTEXITCODE
           Stop-Process -Id $server.Id
           if ($privateExit -ne 0 -or $groupExit -ne 0) { exit 1 }
+
+  linux:
+    name: linux (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc
+            sanitize: ""
+          - name: asan-ubsan
+            sanitize: address,undefined
+          - name: tsan
+            sanitize: thread
+    # 消毒器任务刚加入，先不阻塞合并；普通的 gcc 编译和测试必须通过
+    continue-on-error: ${{ matrix.sanitize != '' }}
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DIMCHAT_SANITIZE=${{ matrix.sanitize }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (epoll)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Network tests with poll instead of epoll
+        run: IMCHAT_POLLER=poll build/bin/IMChatUnitTests --gtest_filter='PollerTest.*:EventLoopTest.*:IoThreads/*:TcpClientTest.*:ChatServerTest.*:ChatClientTest.*'
+
+      - name: Benchmark smoke test
+        if: matrix.sanitize == ''
+        run: |
+          mkdir bench_data
+          build/bin/IMChatBench prepare bench_data 200
+          build/bin/IMChatServer --port 9600 --data bench_data --rate-limit 0 &
+          sleep 1
+          build/bin/IMChatBench run --data bench_data --port 9600 --clients 100 --messages 50
+          build/bin/IMChatBench run --data bench_data --port 9600 --clients 50 --messages 20 --group
+          kill %1

@@ -47,10 +47,10 @@
   - 断线重连也改用令牌，明文密码登录成功后就从内存里清除。
 
 下一步：
-- [ ] `EpollPoller`（需要 Linux 环境：WSL 或 CI）
+- [x] `EpollPoller`：Linux 上默认使用，环境变量 `IMCHAT_POLLER=poll` 可以切回 poll 对比
 - [x] 多线程：N 个 I/O 线程（one loop per thread）负责收发和解析，业务处理在单个业务线程里（不需要加锁），发件箱按 I/O 线程分批交回；私信吞吐提高 61%
 - [ ] 业务状态分片到多个业务线程（群消息目前受限于单个业务线程）
-- [ ] 让业务核心不再依赖 Windows API（SHA-256、文件操作），服务端可以在 Linux 上编译运行
+- [x] 业务核心不再只依赖 Windows API：文件操作、编码转换、SHA-256 都有 POSIX 实现，服务端、命令行客户端、压测工具和全部测试可以在 Linux 上编译运行（在 MSVC、MinGW GCC、MSYS2 的 POSIX GCC 下验证）
 
 原计划：
 
@@ -74,7 +74,7 @@
 
 - 测试框架换成 GoogleTest；为协议编解码和服务端逻辑补充单元测试和集成测试。
 - [x] GitHub Actions（Windows）：警告视为错误地编译、全部测试、单元测试乱序重复、压测冒烟测试
-- [ ] Linux 上编译、跑测试，并开 AddressSanitizer / ThreadSanitizer（需要先让服务端能在 Linux 上编译）
+- [x] GitHub Actions（Linux）：GCC 编译和全部测试（epoll 与 poll 各一遍）、压测冒烟测试，AddressSanitizer + UBSan、ThreadSanitizer
 - [x] 压测工具 `IMChatBench`：多线程事件循环、数百条连接，统计吞吐量和 p50/p90/p99 延迟。压测发现并解决了两个瓶颈：消息文件改为增量读取（私信 104 → 3.8 万条/秒），发送改为合并写（群消息 1.4 千 → 1.6 万条/秒），见 [BENCHMARK.md](BENCHMARK.md)。
 - 加入 clang-format、clang-tidy 和结构化日志。
 

@@ -5,8 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(NOT WIN32)
-    message(FATAL_ERROR "The current clients are Windows-only (Win32 / Direct2D).")
+# The server, the client libraries, the command-line client, the benchmark and the tests build on
+# Windows (MSVC or MinGW) and on Linux. The GUI, the console client and the old blocking network code are Windows-only.
+find_package(Threads REQUIRED)
+if(CYGWIN)
+    # Cygwin / MSYS2 hide POSIX functions (pread, fileno, ...) in strict -std=c++17 mode; glibc g++ defines this already.
+    add_compile_definitions(_GNU_SOURCE)
 endif()
 
 # All executables land in build/bin/<Config>/, so the programs find ../../../data from there.
@@ -17,6 +21,8 @@ add_library(imchat_options INTERFACE)
 target_compile_options(imchat_options INTERFACE
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /W4 /permissive- /MP>)
 target_compile_options(imchat_options INTERFACE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra>)
+# Portable code uses the standard sscanf/fopen family; MSVC would otherwise ask for its *_s variants.
+target_compile_definitions(imchat_options INTERFACE $<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>)
 option(IMCHAT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 if(IMCHAT_WARNINGS_AS_ERRORS)
     target_compile_options(imchat_options INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/WX> $<$<CXX_COMPILER_ID:GNU,Clang>:-Werror>)
@@ -25,31 +31,45 @@ if(MINGW)
     # MinGW's headers default to an older Windows; BCryptHash pseudo-handles and per-monitor DPI need Windows 10.
     target_compile_definitions(imchat_options INTERFACE _WIN32_WINNT=0x0A00 WINVER=0x0A00 NTDDI_VERSION=0x0A00000C)
 endif()
+# GCC / Clang sanitizers, e.g. -DIMCHAT_SANITIZE=address,undefined or -DIMCHAT_SANITIZE=thread (used by CI on Linux).
+set(IMCHAT_SANITIZE "" CACHE STRING "Comma-separated sanitizers to enable (GCC/Clang)")
+if(IMCHAT_SANITIZE)
+    target_compile_options(imchat_options INTERFACE -fsanitize=${IMCHAT_SANITIZE} -fno-omit-frame-pointer)
+    target_link_options(imchat_options INTERFACE -fsanitize=${IMCHAT_SANITIZE})
+endif()
 
 # ---- core: domain model, persistence, message log ----
 file(GLOB CORE_SOURCES CONFIGURE_DEPENDS src/core/*.cpp src/core/*.h)
 add_library(imchat_core STATIC ${CORE_SOURCES})
 target_include_directories(imchat_core PUBLIC src/core)
-target_link_libraries(imchat_core PUBLIC imchat_options bcrypt)
+target_link_libraries(imchat_core PUBLIC imchat_options Threads::Threads)
+if(WIN32)
+    target_link_libraries(imchat_core PUBLIC bcrypt)
+else()
+    find_package(Iconv REQUIRED)   # converting legacy GBK data files
+    target_link_libraries(imchat_core PUBLIC Iconv::Iconv)
+endif()
 
-# ---- net: sockets helpers and the group chat room server ----
-file(GLOB NET_SOURCES CONFIGURE_DEPENDS src/net/*.cpp src/net/*.h)
-add_library(imchat_net STATIC ${NET_SOURCES})
-target_include_directories(imchat_net PUBLIC src/net)
-target_link_libraries(imchat_net PUBLIC imchat_core ws2_32)
+if(WIN32)
+    # ---- net: sockets helpers and the group chat room server ----
+    file(GLOB NET_SOURCES CONFIGURE_DEPENDS src/net/*.cpp src/net/*.h)
+    add_library(imchat_net STATIC ${NET_SOURCES})
+    target_include_directories(imchat_net PUBLIC src/net)
+    target_link_libraries(imchat_net PUBLIC imchat_core ws2_32)
 
-# ---- console client ----
-file(GLOB CONSOLE_SOURCES CONFIGURE_DEPENDS src/console/*.cpp src/console/*.h)
-add_executable(IMChatConsole ${CONSOLE_SOURCES})
-target_link_libraries(IMChatConsole PRIVATE imchat_net)
+    # ---- console client ----
+    file(GLOB CONSOLE_SOURCES CONFIGURE_DEPENDS src/console/*.cpp src/console/*.h)
+    add_executable(IMChatConsole ${CONSOLE_SOURCES})
+    target_link_libraries(IMChatConsole PRIVATE imchat_net)
 
-# ---- GUI client (Win32 + Direct2D) ----
-file(GLOB GUI_SOURCES CONFIGURE_DEPENDS src/gui/*.cpp src/gui/*.h)
-add_executable(IMChatClient WIN32 ${GUI_SOURCES})
-target_compile_definitions(IMChatClient PRIVATE NOMINMAX)
-target_link_libraries(IMChatClient PRIVATE imchat_net imchat_client d2d1 dwrite comctl32 dwmapi shell32 dbghelp)
-if(MINGW)
-    target_link_options(IMChatClient PRIVATE -municode)   # the GUI's entry point is wWinMain
+    # ---- GUI client (Win32 + Direct2D) ----
+    file(GLOB GUI_SOURCES CONFIGURE_DEPENDS src/gui/*.cpp src/gui/*.h)
+    add_executable(IMChatClient WIN32 ${GUI_SOURCES})
+    target_compile_definitions(IMChatClient PRIVATE NOMINMAX)
+    target_link_libraries(IMChatClient PRIVATE imchat_net imchat_client d2d1 dwrite comctl32 dwmapi shell32 dbghelp)
+    if(MINGW)
+        target_link_options(IMChatClient PRIVATE -municode)   # the GUI's entry point is wWinMain
+    endif()
 endif()
 
 # ---- protocol: frame codec and JSON packets (portable) ----
@@ -63,7 +83,7 @@ target_link_libraries(imchat_protocol PUBLIC imchat_options)
 file(GLOB REACTOR_SOURCES CONFIGURE_DEPENDS src/reactor/*.cpp src/reactor/*.h)
 add_library(imchat_reactor STATIC ${REACTOR_SOURCES})
 target_include_directories(imchat_reactor PUBLIC src/reactor)
-target_link_libraries(imchat_reactor PUBLIC imchat_options)
+target_link_libraries(imchat_reactor PUBLIC imchat_options Threads::Threads)
 if(WIN32)
     # WIN32_LEAN_AND_MEAN keeps windows.h from pulling in the old winsock.h, which clashes with winsock2.h
     target_compile_definitions(imchat_reactor PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -90,7 +110,7 @@ target_link_libraries(IMChatBench PRIVATE imchat_reactor imchat_protocol imchat_
 
 # ---- tests ----
 enable_testing()
-add_executable(IMChatTests tests/TestMain.cpp)
+add_executable(IMChatTests tests/TestMain.cpp)   # the course's original business tests
 target_link_libraries(IMChatTests PRIVATE imchat_core)
 add_test(NAME IMChatTests COMMAND IMChatTests WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
@@ -118,4 +138,6 @@ if(IMCHAT_BUILD_UNIT_TESTS)
     set_tests_properties(IMChatUnitTests.MultiThreadedServer PROPERTIES ENVIRONMENT IMCHAT_TEST_IO_THREADS=3)
 endif()
 
-set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT IMChatClient)
+if(WIN32)
+    set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT IMChatClient)
+endif()

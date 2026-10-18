@@ -11,8 +11,6 @@ short toPollEvents(unsigned interest) {
 
 }  // namespace
 
-std::unique_ptr<Poller> Poller::create() { return std::make_unique<PollPoller>(); }
-
 void PollPoller::update(SocketHandle socket, unsigned interest) {
     auto it = index_.find(socket);
     if (it != index_.end()) {
