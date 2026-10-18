@@ -22,11 +22,16 @@ void TcpConnection::start() {
 
 void TcpConnection::send(std::string data) {
     if (loop_.isInLoopThread()) {
-        sendInLoop(data);
+        sendInLoop(data.data(), data.size());
         return;
     }
     Ptr self = shared_from_this();
-    loop_.queueInLoop([self, data = std::move(data)] { self->sendInLoop(data); });
+    loop_.queueInLoop([self, data = std::move(data)] { self->sendInLoop(data.data(), data.size()); });
+}
+
+void TcpConnection::send(const char* data, std::size_t size) {
+    if (loop_.isInLoopThread()) sendInLoop(data, size);
+    else send(std::string(data, size));   // 跨线程：复制一份带过去
 }
 
 void TcpConnection::shutdownAfterFlush() {
@@ -119,11 +124,11 @@ void TcpConnection::handleWrite() {
     updateInterest();
 }
 
-void TcpConnection::sendInLoop(const std::string& data) {
+void TcpConnection::sendInLoop(const char* data, std::size_t size) {
     if (state_ != State::CONNECTED) return;
     // 先放进输出缓冲区，本轮事件处理完之后再统一写：同一轮里发给这条连接的多条消息（比如群消息的推送）
     // 合并成一次 send 系统调用。压测中群消息的吞吐因此明显提高，见 docs/BENCHMARK.md
-    output_.append(data.data(), data.size());
+    output_.append(data, size);
     if (output_.readableBytes() > kHighWaterMark) {
         Log::warn("连接 " + peer_ + " 的待发送数据超过上限，对方可能已停止接收，断开连接");
         handleClose();

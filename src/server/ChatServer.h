@@ -129,12 +129,22 @@ private:
     bool isOnline(const std::string& accountKey) const;
     ServiceBase* accountOf(const Session& session) const;
     void pushTo(const std::string& accountKey, MessageType type, const nlohmann::json& body);   // 对方在线才发
-    void pushBytesTo(const std::string& accountKey, const std::string& bytes);   // 发送已经编码好的帧（群发时只编码一次）
+    // 发送已经编码好的帧：群发时只编码一次，所有接收者共用同一份数据
+    void pushBytesTo(const std::string& accountKey, const std::shared_ptr<const std::string>& bytes);
     void send(const TcpConnection::Ptr& connection, MessageType type, nlohmann::json body);
     // 把编码好的数据交给连接发送 / 在连接所属的 I/O 线程里执行一个操作（比如发完后关闭）。
     // 多线程时先放进发件箱，本轮结束时按 I/O 线程分批投递；同一条连接的操作保持先后顺序
     void deliver(const TcpConnection::Ptr& connection, std::string bytes);
+    void deliverShared(const TcpConnection::Ptr& connection, const std::shared_ptr<const std::string>& bytes);
     void post(const TcpConnection::Ptr& connection, std::function<void()> task);
+    // 发件箱里的一项：发送一份（可能被很多连接共用的）数据，或者执行一个操作（如发完后关闭）
+    struct Outgoing {
+        TcpConnection::Ptr connection;
+        std::shared_ptr<const std::string> bytes;
+        std::function<void()> action;
+        void run() const;   // 在连接所属的线程里调用
+    };
+    void enqueue(Outgoing item);
     void flushOutbox();
     void sendError(const TcpConnection::Ptr& connection, const nlohmann::json& request, ErrorCode code,
                    const std::string& message);
@@ -154,7 +164,7 @@ private:
     std::unordered_map<std::string, std::uint64_t> online_;            // "QQ 10001" → 连接编号
     std::unordered_map<std::string, RecentMessages> recent_;           // "QQ 10001" → 最近的消息回执
     std::unordered_map<std::string, ApiHandler> api_;                  // op → 处理函数
-    std::vector<std::pair<TcpConnection::Ptr, std::function<void()>>> outbox_;   // 本轮要交给 I/O 线程的操作
+    std::vector<Outgoing> outbox_;   // 本轮要交给 I/O 线程的发送和操作
     bool batchedStore_ = false;   // 消息存储批量提交（SQLite）
     bool useOutbox_ = false;      // 发送先进发件箱：多线程时按线程分批；批量提交时保证先提交再发回执
 };

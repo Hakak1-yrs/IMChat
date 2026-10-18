@@ -28,6 +28,8 @@ public:
 
     void start();                      // 开始接收数据（TcpServer 设置好回调后调用）
     void send(std::string data);       // 任何线程都可以调用
+    // 同上，数据由调用者保管：在连接自己的线程里调用时直接追加到输出缓冲区，省一次复制（群发时同一份数据发给很多连接）
+    void send(const char* data, std::size_t size);
     void shutdownAfterFlush();         // 把已经要发的数据发完再关闭（如“你已在别处登录”的通知）
     void forceClose();                 // 立即关闭
 
@@ -49,7 +51,7 @@ private:
     void handleRead();
     void handleWrite();
     void handleClose();
-    void sendInLoop(const std::string& data);
+    void sendInLoop(const char* data, std::size_t size);
     void updateInterest();
 
     EventLoop& loop_;

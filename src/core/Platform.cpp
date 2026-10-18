@@ -191,11 +191,12 @@ const std::string& Platform::dataDir() const { return dataDir_; }
 
 // ======================== 用户与账号 ========================
 
+std::string Platform::accountKey(ServiceType type, const std::string& id) { return ServiceTypeHelper::code(type) + " " + id; }
+
+// 哈希索引：原来是逐个比较全部账号，几乎每个请求都要查好几次（群消息算 @ 时每个成员查一次），账号一多就成了瓶颈
 ServiceBase* Platform::findAccount(ServiceType type, const std::string& id) const {
-    for (const auto& acc : accounts_) {
-        if (acc->type() == type && acc->id() == id) return acc.get();
-    }
-    return nullptr;
+    auto it = accountIndex_.find(accountKey(type, id));
+    return it == accountIndex_.end() ? nullptr : it->second;
 }
 
 User* Platform::findUser(int userId) {
@@ -242,6 +243,7 @@ ServiceBase* Platform::openService(User& user, ServiceType type, const std::stri
     auto account = createService(type, id, user.id(), nickname, birthday, Date::today(), location, password);
     ServiceBase* raw = account.get();
     user.attach(raw);
+    accountIndex_[accountKey(type, id)] = raw;
     accounts_.push_back(std::move(account));
     msg = "开通成功！你的" + raw->idLabel() + "为：" + id;
     // 该服务还没有任何群（如新增的微商服务），按题目约定建立 1001～1006 号群
@@ -284,6 +286,7 @@ bool Platform::closeService(User& user, ServiceType type, std::string& msg) {
     noVerify_.erase(code + " " + id);
     // 5. 删除账号对象本身
     user.detach(type);
+    accountIndex_.erase(accountKey(type, id));
     accounts_.erase(std::remove_if(accounts_.begin(), accounts_.end(),
                                    [account](const std::unique_ptr<ServiceBase>& a) { return a.get() == account; }),
                     accounts_.end());
@@ -641,6 +644,7 @@ int Platform::loadAccounts(const std::string& text) {
         }
         account->loadExtraData(extra);
         owner->attach(account.get());
+        accountIndex_[accountKey(account->type(), account->id())] = account.get();
         accounts_.push_back(std::move(account));
     }
     return bad;
@@ -978,6 +982,7 @@ std::vector<std::string> Platform::mentionsOf(const Group& group, const Message&
     if (!message.isGroup() || message.isSystem() || message.revoked()) return result;
     const std::string& sender = message.sender();
     // @所有人：只有能修改群资料的人（群主；QQ 群模式下还有管理员）才有效
+    if (message.text().find('@') == std::string::npos) return result;   // 绝大多数消息没有 @：不必逐个成员比对
     const bool everyone = Util::containsText(message.text(), "@所有人") && group.policy().canEditInfo(group, sender);
     for (const std::string& id : group.members()) {
         if (id == sender) continue;

@@ -4,6 +4,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "DataFile.h"
 #include "FriendRequest.h"
@@ -142,6 +143,7 @@ public:
 
 private:
     std::string nickOf(ServiceType type, const std::string& id) const;
+    static std::string accountKey(ServiceType type, const std::string& id);
     bool friendsBothWays(ServiceType type, const std::string& a, const std::string& b) const;
     bool canSeeMoment(ServiceType type, const std::string& viewer, const std::string& author, const std::string& scope) const;
     void applyFriendship(ServiceType type, const std::string& requester, const std::string& target,
@@ -169,6 +171,7 @@ private:
     std::string dataDir_;
     std::string sessionStamp_;                                // 本次运行的时间戳，用于备份/冲突目录名
     std::vector<std::unique_ptr<ServiceBase>> accounts_;   // 拥有所有账号对象
+    std::unordered_map<std::string, ServiceBase*> accountIndex_;   // "服务 账号" → 账号（findAccount 用）
     std::map<int, User> users_;
     GroupManager groups_;
     std::unique_ptr<MessageStore> messages_;

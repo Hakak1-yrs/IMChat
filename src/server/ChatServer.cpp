@@ -350,11 +350,18 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
 
     // 在线的接收者立即推送；不在线的上线后通过 SYNC_REQ 取到
     // 群消息要推给很多人：只编码一次，同一份字节发给每个在线的接收者，省去重复的 JSON 序列化
+    // 群发时，业务线程对每个接收者只做查找和登记，帧的复制在各个 I/O 线程里完成
     Packet push;
     push.type = MessageType::MSG_PUSH;
     push.body = messageJson(*saved);
-    const std::string bytes = push.encode();
-    for (const std::string& receiver : receivers) pushBytesTo(service + " " + receiver, bytes);
+    const auto bytes = std::make_shared<const std::string>(push.encode());
+    std::string key = service + " ";   // 复用同一个字符串拼接账号，避免每个接收者都分配一次
+    const std::size_t prefix = key.size();
+    for (const std::string& receiver : receivers) {
+        key.resize(prefix);
+        key += receiver;
+        pushBytesTo(key, bytes);
+    }
 }
 
 bool ChatServer::takeToken(Session& session) {
@@ -459,13 +466,13 @@ void ChatServer::pushTo(const std::string& accountKey, MessageType type, const j
     send(receiver->second.connection, type, body);
 }
 
-void ChatServer::pushBytesTo(const std::string& accountKey, const std::string& bytes) {
+void ChatServer::pushBytesTo(const std::string& accountKey, const std::shared_ptr<const std::string>& bytes) {
     auto online = online_.find(accountKey);
     if (online == online_.end()) return;
     auto receiver = sessions_.find(online->second);
     if (receiver == sessions_.end()) return;
     ++stats_.pushes;
-    deliver(receiver->second.connection, bytes);
+    deliverShared(receiver->second.connection, bytes);
 }
 
 // ======================== 通用请求（CALL_REQ） ========================
@@ -911,7 +918,15 @@ void ChatServer::deliver(const TcpConnection::Ptr& connection, std::string bytes
         connection->send(std::move(bytes));
         return;
     }
-    post(connection, [connection, bytes = std::move(bytes)] { connection->send(bytes); });
+    deliverShared(connection, std::make_shared<const std::string>(std::move(bytes)));
+}
+
+void ChatServer::deliverShared(const TcpConnection::Ptr& connection, const std::shared_ptr<const std::string>& bytes) {
+    if (!useOutbox_) {
+        connection->send(bytes->data(), bytes->size());
+        return;
+    }
+    enqueue(Outgoing{ connection, bytes, nullptr });
 }
 
 void ChatServer::post(const TcpConnection::Ptr& connection, std::function<void()> task) {
@@ -919,31 +934,42 @@ void ChatServer::post(const TcpConnection::Ptr& connection, std::function<void()
         task();
         return;
     }
-    // 多线程：先攒在发件箱里，本轮业务处理完之后按 I/O 线程分组，每个线程只投递一次。
-    // 否则群发时每条推送都是一次跨线程投递（加一次唤醒），I/O 线程每次只拿到一条，合并写也就失效了
+    enqueue(Outgoing{ connection, nullptr, std::move(task) });
+}
+
+void ChatServer::enqueue(Outgoing item) {
+    // 先攒在发件箱里，本轮业务处理完之后再交出去：
+    // - 多线程：按 I/O 线程分组，每个线程只投递一次。否则群发时每条推送都是一次跨线程投递（加一次唤醒），
+    //   I/O 线程每次只拿到一条，合并写也就失效了；
+    // - 存储批量提交：保证先提交、再发回执
     if (outbox_.empty()) loop_.queueInLoop([this] { flushOutbox(); });
-    outbox_.push_back({ connection, std::move(task) });
+    outbox_.push_back(std::move(item));
+}
+
+void ChatServer::Outgoing::run() const {
+    // 在连接自己的线程里执行：发送时直接从共享的数据追加到输出缓冲区，只复制这一次
+    if (bytes) connection->send(bytes->data(), bytes->size());
+    else action();
 }
 
 void ChatServer::flushOutbox() {
     // 存储批量提交时：先提交本轮的写入，再把回执、推送交出去——客户端收到回执时，消息一定已经保存
     platform_.messages().commitPending();
+    std::vector<Outgoing> items;
+    items.swap(outbox_);
     if (options_.ioThreads == 0) {   // 单线程：连接都在本线程，按顺序直接执行
-        std::vector<std::pair<TcpConnection::Ptr, std::function<void()>>> items;
-        items.swap(outbox_);
-        for (auto& item : items) item.second();
+        for (const Outgoing& item : items) item.run();
         return;
     }
-    std::unordered_map<EventLoop*, std::shared_ptr<std::vector<std::function<void()>>>> batches;
-    for (auto& [connection, task] : outbox_) {
-        auto& batch = batches[&connection->loop()];
-        if (!batch) batch = std::make_shared<std::vector<std::function<void()>>>();
-        batch->push_back(std::move(task));   // 同一条连接的操作保持原来的先后顺序
+    std::unordered_map<EventLoop*, std::shared_ptr<std::vector<Outgoing>>> batches;
+    for (Outgoing& item : items) {
+        auto& batch = batches[&item.connection->loop()];
+        if (!batch) batch = std::make_shared<std::vector<Outgoing>>();
+        batch->push_back(std::move(item));   // 同一条连接的操作保持原来的先后顺序
     }
-    outbox_.clear();
     for (auto& [ioLoop, batch] : batches) {
         ioLoop->queueInLoop([batch] {
-            for (auto& task : *batch) task();
+            for (const Outgoing& item : *batch) item.run();
         });
     }
 }
