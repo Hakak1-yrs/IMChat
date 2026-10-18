@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -16,6 +17,9 @@ public:
     TestServer(std::string dataDir, ChatServer::Options options) : dataDir_(std::move(dataDir)) {
         options.ip = "127.0.0.1";
         if (options.tokenSecret.empty()) options.tokenSecret = "unit-test-token-secret-0123456789abcdef";   // 重启后令牌仍然有效
+        // 设置了 IMCHAT_TEST_IO_THREADS 时，全部集成测试改在多线程模式下再跑一遍（见 CMakeLists.txt）
+        const std::string threads = environment("IMCHAT_TEST_IO_THREADS");
+        if (!threads.empty()) options.ioThreads = std::atoi(threads.c_str());
         thread_ = std::make_unique<LoopThread>(
             [this, options](EventLoop& loop) {
                 platform_ = std::make_unique<Platform>(dataDir_);
@@ -45,6 +49,20 @@ public:
         for (const auto& entry : fs::directory_iterator(fs::u8path(IMCHAT_SOURCE_DIR) / "data_demo"))
             fs::copy_file(entry.path(), dir / entry.path().filename());
         return dir.u8string() + "/";
+    }
+
+    static std::string environment(const char* name) {
+#ifdef _MSC_VER
+        char* value = nullptr;
+        std::size_t length = 0;
+        if (_dupenv_s(&value, &length, name) != 0 || !value) return "";
+        std::string result = value;
+        std::free(value);
+        return result;
+#else
+        const char* value = std::getenv(name);
+        return value ? value : "";
+#endif
     }
 
     static std::string readText(const std::string& utf8Path) {

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include "LoopThread.h"
@@ -14,14 +16,21 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// 回显服务端：收到什么就发回什么
-class EchoFixture : public ::testing::Test {
+// 回显服务端：收到什么就发回什么。参数是 I/O 线程数：每个用例分别在单线程和多线程（one loop per thread）下运行
+class EchoFixture : public ::testing::TestWithParam<int> {
 protected:
     void SetUp() override {
         thread_ = std::make_unique<LoopThread>(
             [this](EventLoop& loop) {
                 server_ = std::make_unique<TcpServer>(loop);
-                server_->setMessageCallback([](const TcpConnection::Ptr& c, Buffer& b) { c->send(b.retrieveAllAsString()); });
+                server_->setThreadCount(GetParam());
+                server_->setMessageCallback([this](const TcpConnection::Ptr& c, Buffer& b) {
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        callbackThreads_.insert(std::this_thread::get_id());
+                    }
+                    c->send(b.retrieveAllAsString());
+                });
                 std::string error;
                 if (!server_->listen("127.0.0.1", 0, error)) throw std::runtime_error(error);
                 port_ = server_->port();
@@ -45,6 +54,8 @@ protected:
     std::unique_ptr<TcpServer> server_;
     std::unique_ptr<LoopThread> thread_;
     std::uint16_t port_ = 0;
+    std::mutex mutex_;
+    std::set<std::thread::id> callbackThreads_;   // 收到数据的回调在哪些线程里执行过
 };
 
 void sendAll(SocketHandle s, const std::string& data) {
@@ -76,7 +87,7 @@ std::string receiveExactly(SocketHandle s, std::size_t size, std::chrono::millis
 
 }  // namespace
 
-TEST_F(EchoFixture, EchoesDataArrivingInPieces) {
+TEST_P(EchoFixture, EchoesDataArrivingInPieces) {
     SocketHandle client = SocketOps::connectTcp("127.0.0.1", port_);
     ASSERT_NE(client, kInvalidSocket);
     sendAll(client, "hel");
@@ -86,7 +97,7 @@ TEST_F(EchoFixture, EchoesDataArrivingInPieces) {
     SocketOps::close(client);
 }
 
-TEST_F(EchoFixture, LargePayloadSurvivesPartialWrites) {
+TEST_P(EchoFixture, LargePayloadSurvivesPartialWrites) {
     // 4 MiB 远超套接字缓冲区：服务端一次写不完，必须靠输出缓冲区和可写事件分多次发完，且顺序不乱
     std::string payload(4u << 20, '\0');
     for (std::size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<char>('a' + i % 26);
@@ -100,7 +111,7 @@ TEST_F(EchoFixture, LargePayloadSurvivesPartialWrites) {
     SocketOps::close(client);
 }
 
-TEST_F(EchoFixture, ServerForgetsConnectionWhenPeerCloses) {
+TEST_P(EchoFixture, ServerForgetsConnectionWhenPeerCloses) {
     SocketHandle client = SocketOps::connectTcp("127.0.0.1", port_);
     ASSERT_NE(client, kInvalidSocket);
     EXPECT_TRUE(eventually([&] { return connectionCount() == 1; }));
@@ -108,7 +119,7 @@ TEST_F(EchoFixture, ServerForgetsConnectionWhenPeerCloses) {
     EXPECT_TRUE(eventually([&] { return connectionCount() == 0; }));
 }
 
-TEST_F(EchoFixture, ManyClientsAtOnce) {
+TEST_P(EchoFixture, ManyClientsAtOnce) {
     const int kClients = 50;
     std::vector<SocketHandle> clients;
     for (int i = 0; i < kClients; ++i) {
@@ -123,3 +134,21 @@ TEST_F(EchoFixture, ManyClientsAtOnce) {
     EXPECT_EQ(connectionCount(), static_cast<std::size_t>(kClients));
     for (SocketHandle c : clients) SocketOps::close(c);
 }
+
+TEST_P(EchoFixture, ConnectionsAreSpreadOverIoThreads) {
+    const int kClients = 8;
+    std::vector<SocketHandle> clients;
+    for (int i = 0; i < kClients; ++i) {
+        clients.push_back(SocketOps::connectTcp("127.0.0.1", port_));
+        ASSERT_NE(clients.back(), kInvalidSocket);
+        sendAll(clients.back(), "x");
+        EXPECT_EQ(receiveExactly(clients.back(), 1, 2s), "x");
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    // 单线程：都在同一个线程；4 个 I/O 线程：8 条连接轮转分配，正好用到全部 4 个线程
+    EXPECT_EQ(callbackThreads_.size(), GetParam() == 0 ? 1u : static_cast<std::size_t>(GetParam()));
+    for (SocketHandle c : clients) SocketOps::close(c);
+}
+
+INSTANTIATE_TEST_SUITE_P(IoThreads, EchoFixture, ::testing::Values(0, 4),
+                         [](const ::testing::TestParamInfo<int>& info) { return info.param == 0 ? std::string("SingleLoop") : "FourIoThreads"; });

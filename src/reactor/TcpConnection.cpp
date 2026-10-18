@@ -55,7 +55,7 @@ EventLoop& TcpConnection::loop() const { return loop_; }
 
 std::size_t TcpConnection::pendingOutput() const { return output_.readableBytes(); }
 
-std::chrono::steady_clock::time_point TcpConnection::lastReceive() const { return lastReceive_; }
+std::chrono::steady_clock::time_point TcpConnection::lastReceive() const { return lastReceive_.load(); }
 
 std::any& TcpConnection::context() { return context_; }
 

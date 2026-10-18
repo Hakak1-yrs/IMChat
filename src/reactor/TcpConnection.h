@@ -1,5 +1,6 @@
 #pragma once
 #include <any>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -60,7 +61,7 @@ private:
     Buffer output_;
     bool watchingWrite_ = false;
     bool flushQueued_ = false;   // 已经安排在本轮事件处理完后写出输出缓冲区
-    std::chrono::steady_clock::time_point lastReceive_;
+    std::atomic<std::chrono::steady_clock::time_point> lastReceive_;   // I/O 线程写，业务线程检查心跳超时时读
     std::any context_;
     MessageCallback onMessage_;
     CloseCallback onClose_;

@@ -103,6 +103,11 @@ if(IMCHAT_BUILD_UNIT_TESTS)
     target_compile_definitions(IMChatUnitTests PRIVATE IMCHAT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     include(GoogleTest)
     gtest_discover_tests(IMChatUnitTests WORKING_DIRECTORY ${CMAKE_BINARY_DIR} DISCOVERY_MODE PRE_TEST)
+    # The same server and client integration tests again, with the server running 3 I/O threads.
+    add_test(NAME IMChatUnitTests.MultiThreadedServer
+             COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*
+             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+    set_tests_properties(IMChatUnitTests.MultiThreadedServer PROPERTIES ENVIRONMENT IMCHAT_TEST_IO_THREADS=3)
 endif()
 
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT IMChatClient)

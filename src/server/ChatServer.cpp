@@ -92,15 +92,18 @@ ChatServer::ChatServer(EventLoop& loop, Platform& platform, Options options)
 
 ChatServer::~ChatServer() {
     if (idleTimer_ != 0) loop_.cancel(idleTimer_);
+    server_.stop();   // 先停掉 I/O 线程：它们的回调会访问下面这些成员，必须在成员销毁之前停
 }
 
 bool ChatServer::start(std::string& error) {
     server_.setConnectionCallback([this](const TcpConnection::Ptr& c) { onConnection(c); });
     server_.setMessageCallback([this](const TcpConnection::Ptr& c, Buffer& b) { onMessage(c, b); });
     server_.setCloseCallback([this](const TcpConnection::Ptr& c) { onClose(c); });
+    server_.setThreadCount(options_.ioThreads);
     if (!server_.listen(options_.ip, options_.port, error)) return false;
     idleTimer_ = loop_.runEvery(options_.idleCheckInterval, [this] { closeIdleConnections(); });
-    Log::info("IMChatServer 正在监听 " + options_.ip + ":" + std::to_string(server_.port()));
+    Log::info("IMChatServer 正在监听 " + options_.ip + ":" + std::to_string(server_.port()) +
+              (options_.ioThreads > 0 ? "，I/O 线程 " + std::to_string(options_.ioThreads) + " 个" : ""));
     return true;
 }
 
@@ -108,12 +111,22 @@ std::uint16_t ChatServer::port() const { return server_.port(); }
 
 std::size_t ChatServer::onlineCount() const { return online_.size(); }
 
+// 线程：连接的三个回调在连接所属的 I/O 线程里调用。会话表、Platform 等业务状态只属于业务线程（loop_），
+// 所以这里只做切帧、解析 JSON 这类与业务无关的工作，再把结果交给业务线程处理。
+// 没有另开 I/O 线程时，两者是同一个线程，runInLoop 会立即执行，与单线程版本完全相同
+
 void ChatServer::onConnection(const TcpConnection::Ptr& connection) {
-    sessions_[connection->id()] = Session{ connection };
-    Log::debug("新连接 #" + std::to_string(connection->id()) + " 来自 " + connection->peer());
+    loop_.runInLoop([this, connection] {
+        sessions_[connection->id()] = Session{ connection };
+        Log::debug("新连接 #" + std::to_string(connection->id()) + " 来自 " + connection->peer());
+    });
 }
 
 void ChatServer::onClose(const TcpConnection::Ptr& connection) {
+    loop_.runInLoop([this, connection] { removeSession(connection); });
+}
+
+void ChatServer::removeSession(const TcpConnection::Ptr& connection) {
     auto it = sessions_.find(connection->id());
     if (it == sessions_.end()) return;
     const Session& session = it->second;
@@ -133,29 +146,37 @@ void ChatServer::onClose(const TcpConnection::Ptr& connection) {
 }
 
 void ChatServer::onMessage(const TcpConnection::Ptr& connection, Buffer& buffer) {
-    // 一次可能收到多帧（粘包），逐帧处理；剩下不足一帧的数据留在缓冲区里等下次（半包）
-    while (connection->connected()) {
+    // 一次可能收到多帧（粘包），逐帧切出来；剩下不足一帧的数据留在缓冲区里等下次（半包）。
+    // 解析失败的帧记为空，交给业务线程回复错误
+    std::vector<std::optional<Packet>> packets;
+    while (true) {
         Frame frame;
         std::size_t consumed = 0;
         const Frame::DecodeResult result = Frame::decode(buffer.peek(), buffer.readableBytes(), frame, consumed);
-        if (result == Frame::DecodeResult::NEED_MORE) return;
+        if (result == Frame::DecodeResult::NEED_MORE) break;
         if (result == Frame::DecodeResult::BAD_LENGTH) {   // 不符合协议：无法再找到下一帧的起点，只能断开
             Log::warn("连接 " + connection->peer() + " 发来的帧长度不合法，断开");
             buffer.retrieveAll();
             connection->forceClose();
-            return;
+            break;
         }
         buffer.retrieve(consumed);
-        // 每帧都重新查找会话：上一帧的处理可能已经关闭了这条连接（会话随之删除）
-        auto it = sessions_.find(connection->id());
-        if (it == sessions_.end()) return;
-        std::optional<Packet> packet = Packet::fromFrame(frame);
-        if (!packet) {
-            sendError(connection, json::object(), ErrorCode::BAD_REQUEST, "正文不是合法的 JSON 对象");
-            continue;
-        }
-        dispatch(it->second, *packet);
+        packets.push_back(Packet::fromFrame(frame));
     }
+    if (packets.empty()) return;
+    // 一批帧一起交给业务线程：跨线程投递一次，而不是每帧一次
+    loop_.runInLoop([this, connection, packets = std::move(packets)] {
+        for (const std::optional<Packet>& packet : packets) {
+            // 每帧都重新查找会话：上一帧的处理可能已经关闭了这条连接（会话随之删除）
+            auto it = sessions_.find(connection->id());
+            if (it == sessions_.end()) return;
+            if (!packet) {
+                sendError(connection, json::object(), ErrorCode::BAD_REQUEST, "正文不是合法的 JSON 对象");
+                continue;
+            }
+            dispatch(it->second, *packet);
+        }
+    });
 }
 
 void ChatServer::dispatch(Session& session, const Packet& packet) {
@@ -249,7 +270,7 @@ void ChatServer::handleLogin(Session& session, const json& request) {
         old->second.loggedIn = false;
         TcpConnection::Ptr oldConnection = old->second.connection;
         send(oldConnection, MessageType::KICKED, json{ { "reason", "你的账号在其他地方登录" } });
-        oldConnection->shutdownAfterFlush();
+        post(oldConnection, [oldConnection] { oldConnection->shutdownAfterFlush(); });   // 排在 KICKED 之后执行
     }
 }
 
@@ -386,7 +407,7 @@ void ChatServer::pushBytesTo(const std::string& accountKey, const std::string& b
     auto online = online_.find(accountKey);
     if (online == online_.end()) return;
     auto receiver = sessions_.find(online->second);
-    if (receiver != sessions_.end()) receiver->second.connection->send(bytes);
+    if (receiver != sessions_.end()) deliver(receiver->second.connection, bytes);
 }
 
 // ======================== 通用请求（CALL_REQ） ========================
@@ -825,11 +846,45 @@ ServiceBase* ChatServer::accountOf(const Session& session) const {
     return platform_.findAccount(type, session.accountKey.substr(space + 1));
 }
 
+void ChatServer::deliver(const TcpConnection::Ptr& connection, std::string bytes) {
+    if (options_.ioThreads == 0) {   // 单线程：连接就在本线程，直接发（会在本轮结束时合并写出）
+        connection->send(std::move(bytes));
+        return;
+    }
+    post(connection, [connection, bytes = std::move(bytes)] { connection->send(bytes); });
+}
+
+void ChatServer::post(const TcpConnection::Ptr& connection, std::function<void()> task) {
+    if (options_.ioThreads == 0) {
+        task();
+        return;
+    }
+    // 多线程：先攒在发件箱里，本轮业务处理完之后按 I/O 线程分组，每个线程只投递一次。
+    // 否则群发时每条推送都是一次跨线程投递（加一次唤醒），I/O 线程每次只拿到一条，合并写也就失效了
+    if (outbox_.empty()) loop_.queueInLoop([this] { flushOutbox(); });
+    outbox_.push_back({ connection, std::move(task) });
+}
+
+void ChatServer::flushOutbox() {
+    std::unordered_map<EventLoop*, std::shared_ptr<std::vector<std::function<void()>>>> batches;
+    for (auto& [connection, task] : outbox_) {
+        auto& batch = batches[&connection->loop()];
+        if (!batch) batch = std::make_shared<std::vector<std::function<void()>>>();
+        batch->push_back(std::move(task));   // 同一条连接的操作保持原来的先后顺序
+    }
+    outbox_.clear();
+    for (auto& [ioLoop, batch] : batches) {
+        ioLoop->queueInLoop([batch] {
+            for (auto& task : *batch) task();
+        });
+    }
+}
+
 void ChatServer::send(const TcpConnection::Ptr& connection, MessageType type, json body) {
     Packet packet;
     packet.type = type;
     packet.body = std::move(body);
-    connection->send(packet.encode());
+    deliver(connection, packet.encode());
 }
 
 void ChatServer::sendError(const TcpConnection::Ptr& connection, const json& request, ErrorCode code,

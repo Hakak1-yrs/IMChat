@@ -59,12 +59,16 @@ void EventLoop::runInLoop(Task task) {
 }
 
 void EventLoop::queueInLoop(Task task) {
+    bool wasEmpty = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        wasEmpty = pending_.empty();
         pending_.push_back(std::move(task));
     }
-    // 事件循环线程自己投递的任务本轮结束时就会执行，不必唤醒；其他线程投递的必须唤醒
-    if (!isInLoopThread()) wakeup();
+    // 事件循环线程自己投递的任务本轮结束时就会执行，不必唤醒；其他线程投递的必须唤醒。
+    // 队列原来就不空时也不必再唤醒：事件循环每次进入等待之前都会在锁内检查队列，不空就不等待；
+    // 而队列从空变为不空的那一次已经唤醒过它。多线程大量互相投递任务时，省掉了绝大部分唤醒用的系统调用
+    if (!isInLoopThread() && wasEmpty) wakeup();
 }
 
 void EventLoop::wakeup() {

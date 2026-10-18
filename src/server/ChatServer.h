@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 #include "LoginToken.h"
 #include "Packet.h"
 #include "ServiceType.h"
@@ -31,6 +33,9 @@ public:
         std::chrono::milliseconds idleTimeout{ 90000 };   // 这么久没有收到任何数据（包括心跳）就断开
         std::chrono::milliseconds idleCheckInterval{ 5000 };
         std::string tokenSecret;   // 登录令牌的签名密钥；为空时随机生成（服务端重启后旧令牌失效）
+        // 另开的 I/O 线程数。为 0 时接受连接、收发和业务处理都在一个线程里；
+        // 大于 0 时收发、切帧、解析 JSON 在 I/O 线程里做，业务处理仍在一个线程里（Platform 不需要加锁）
+        int ioThreads = 0;
     };
 
     ChatServer(EventLoop& loop, Platform& platform, Options options);
@@ -93,6 +98,7 @@ private:
     void onConnection(const TcpConnection::Ptr& connection);
     void onMessage(const TcpConnection::Ptr& connection, Buffer& buffer);
     void onClose(const TcpConnection::Ptr& connection);
+    void removeSession(const TcpConnection::Ptr& connection);   // 业务线程：连接关闭后清理会话、通知好友下线
     void dispatch(Session& session, const Packet& packet);
 
     void handleLogin(Session& session, const nlohmann::json& request);
@@ -109,6 +115,11 @@ private:
     void pushTo(const std::string& accountKey, MessageType type, const nlohmann::json& body);   // 对方在线才发
     void pushBytesTo(const std::string& accountKey, const std::string& bytes);   // 发送已经编码好的帧（群发时只编码一次）
     void send(const TcpConnection::Ptr& connection, MessageType type, nlohmann::json body);
+    // 把编码好的数据交给连接发送 / 在连接所属的 I/O 线程里执行一个操作（比如发完后关闭）。
+    // 多线程时先放进发件箱，本轮结束时按 I/O 线程分批投递；同一条连接的操作保持先后顺序
+    void deliver(const TcpConnection::Ptr& connection, std::string bytes);
+    void post(const TcpConnection::Ptr& connection, std::function<void()> task);
+    void flushOutbox();
     void sendError(const TcpConnection::Ptr& connection, const nlohmann::json& request, ErrorCode code,
                    const std::string& message);
     void closeIdleConnections();
@@ -123,4 +134,5 @@ private:
     std::unordered_map<std::string, std::uint64_t> online_;            // "QQ 10001" → 连接编号
     std::unordered_map<std::string, RecentMessages> recent_;           // "QQ 10001" → 最近的消息回执
     std::unordered_map<std::string, ApiHandler> api_;                  // op → 处理函数
+    std::vector<std::pair<TcpConnection::Ptr, std::function<void()>>> outbox_;   // 本轮要交给 I/O 线程的操作
 };

@@ -1,16 +1,12 @@
 #include "TcpServer.h"
+#include <future>
+#include <map>
+#include "EventLoopThread.h"
 #include "Log.h"
 
 TcpServer::TcpServer(EventLoop& loop) : loop_(loop) {}
 
-TcpServer::~TcpServer() {
-    if (listener_ != kInvalidSocket) {
-        loop_.unwatch(listener_);
-        SocketOps::close(listener_);
-    }
-    for (auto& entry : connections_) entry.second->setCloseCallback(nullptr);   // 服务端在销毁，不再回调
-    connections_.clear();
-}
+TcpServer::~TcpServer() { stop(); }
 
 void TcpServer::setConnectionCallback(ConnectionCallback callback) { onConnection_ = std::move(callback); }
 
@@ -18,16 +14,59 @@ void TcpServer::setMessageCallback(TcpConnection::MessageCallback callback) { on
 
 void TcpServer::setCloseCallback(TcpConnection::CloseCallback callback) { onClose_ = std::move(callback); }
 
+void TcpServer::setThreadCount(int count) { threadCount_ = count > 0 ? count : 0; }
+
 bool TcpServer::listen(const std::string& ip, std::uint16_t port, std::string& error) {
     listener_ = SocketOps::listenTcp(ip, port, SOMAXCONN, port_, error);
     if (listener_ == kInvalidSocket) return false;
+    for (int i = 0; i < threadCount_; ++i) threads_.push_back(std::make_unique<EventLoopThread>());
     loop_.watch(listener_, IO_READ, [this](unsigned) { handleAccept(); });
     return true;
+}
+
+void TcpServer::stop() {
+    if (listener_ != kInvalidSocket) {
+        loop_.unwatch(listener_);
+        SocketOps::close(listener_);
+        listener_ = kInvalidSocket;
+    }
+    // 在每条连接自己的线程里关闭它（不再回调上层），全部关完之后才能停 I/O 线程：
+    // 连接对象引用着所属的事件循环，必须赶在事件循环销毁之前处理完
+    std::map<EventLoop*, std::vector<TcpConnection::Ptr>> byLoop;
+    for (auto& entry : connections_) byLoop[&entry.second->loop()].push_back(entry.second);
+    connections_.clear();
+    for (auto& [owner, connections] : byLoop) {
+        auto closeAll = [&connections] {
+            for (const TcpConnection::Ptr& c : connections) {
+                c->setCloseCallback(nullptr);
+                c->forceClose();
+            }
+        };
+        if (owner == &loop_) {
+            closeAll();
+            continue;
+        }
+        std::promise<void> done;
+        owner->runInLoop([&closeAll, &done] {
+            closeAll();
+            done.set_value();
+        });
+        done.get_future().wait();
+    }
+    byLoop.clear();
+    threads_.clear();   // 让 I/O 线程的事件循环退出，并等线程结束
 }
 
 std::uint16_t TcpServer::port() const { return port_; }
 
 std::size_t TcpServer::connectionCount() const { return connections_.size(); }
+
+EventLoop& TcpServer::nextLoop() {
+    if (threads_.empty()) return loop_;
+    EventLoop& loop = threads_[nextThread_]->loop();
+    nextThread_ = (nextThread_ + 1) % threads_.size();
+    return loop;
+}
 
 void TcpServer::handleAccept() {
     // 一次可读事件可能对应多个排队的新连接：一直 accept 到“暂时没有了”为止
@@ -44,16 +83,24 @@ void TcpServer::handleAccept() {
             continue;
         }
         SocketOps::setNoDelay(socket);
-        auto connection = std::make_shared<TcpConnection>(loop_, socket, nextId_++);
+        EventLoop& ioLoop = nextLoop();   // 轮转分配：这条连接此后一直由这个线程负责
+        auto connection = std::make_shared<TcpConnection>(ioLoop, socket, nextId_++);
         connection->setMessageCallback(onMessage_);
         connection->setCloseCallback([this](const TcpConnection::Ptr& c) { removeConnection(c); });
         connections_[connection->id()] = connection;
-        if (onConnection_) onConnection_(connection);
-        connection->start();
+        // 在连接所属的线程里通知上层并开始收数据（只有一个线程时就是立即执行）
+        ioLoop.runInLoop([this, connection] {
+            if (onConnection_) onConnection_(connection);
+            connection->start();
+        });
     }
 }
 
 void TcpServer::removeConnection(const TcpConnection::Ptr& connection) {
+    // 在连接所属的线程里调用；连接表属于主循环线程，删除要转过去做
     if (onClose_) onClose_(connection);
-    connections_.erase(connection->id());   // 调用者手里还有一份 shared_ptr，连接对象要等这次回调结束后才销毁
+    std::weak_ptr<char> alive = alive_;   // 转过去的任务执行时，服务端可能已经销毁了
+    loop_.runInLoop([this, alive, connection] {
+        if (alive.lock()) connections_.erase(connection->id());
+    });
 }

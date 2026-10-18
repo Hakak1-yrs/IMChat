@@ -1,12 +1,20 @@
 #pragma once
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include "TcpConnection.h"
 
+class EventLoopThread;
+
 // TCP 服务端：监听端口、接受新连接，并持有所有连接，直到它们关闭。
-// 所有回调都在事件循环线程里执行
+//
+// 线程：默认只有一个事件循环，接受连接和所有连接的收发都在它里面。
+// setThreadCount(n) 之后另开 n 个 I/O 线程（每个线程一个事件循环，one loop per thread）：
+// 主循环只负责接受连接，新连接按轮转分给某个 I/O 线程，此后这条连接的读写、回调都在那个线程里执行。
+// 连接的建立、收到数据、关闭三个回调在连接所属的线程里调用
 class TcpServer {
 public:
     using ConnectionCallback = std::function<void(const TcpConnection::Ptr&)>;
@@ -19,21 +27,29 @@ public:
     void setConnectionCallback(ConnectionCallback callback);           // 新连接建立
     void setMessageCallback(TcpConnection::MessageCallback callback);  // 收到数据
     void setCloseCallback(TcpConnection::CloseCallback callback);      // 连接关闭
+    void setThreadCount(int count);                                     // I/O 线程数，必须在 listen 之前设置
 
     bool listen(const std::string& ip, std::uint16_t port, std::string& error);   // port 为 0 时由系统分配
+    // 关闭所有连接（不再回调）并停止 I/O 线程；在主循环线程里调用。析构时会自动调用
+    void stop();
     std::uint16_t port() const;
     std::size_t connectionCount() const;
 
 private:
     void handleAccept();
     void removeConnection(const TcpConnection::Ptr& connection);
+    EventLoop& nextLoop();
 
     EventLoop& loop_;
     SocketHandle listener_ = kInvalidSocket;
     std::uint16_t port_ = 0;
     std::uint64_t nextId_ = 1;
-    std::unordered_map<std::uint64_t, TcpConnection::Ptr> connections_;
+    int threadCount_ = 0;
+    std::vector<std::unique_ptr<EventLoopThread>> threads_;
+    std::size_t nextThread_ = 0;
+    std::unordered_map<std::uint64_t, TcpConnection::Ptr> connections_;   // 只在主循环线程里访问
     ConnectionCallback onConnection_;
     TcpConnection::MessageCallback onMessage_;
     TcpConnection::CloseCallback onClose_;
+    std::shared_ptr<char> alive_ = std::make_shared<char>();   // 投递到主循环的任务用它判断服务端是否还在
 };
