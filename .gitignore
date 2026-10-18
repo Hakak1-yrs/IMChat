@@ -1,0 +1,27 @@
+# Visual Studio
+.vs/
+*.user
+*.aps
+*.ipch
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+
+# Build output
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+build/
+out/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.tlog
+*.log
+
+# Runtime data (data_demo/ holds the committed seed data)
+data/

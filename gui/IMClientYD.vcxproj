@@ -1,0 +1,155 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{3A9E5D21-6B7C-4F8E-A1D2-7C4B9E0F1A23}</ProjectGuid>
+    <RootNamespace>IMClientYD</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup>
+    <!-- 与控制台版相同：在 IMSystemYD 目录下运行，使用同一个 data 目录 -->
+    <LocalDebuggerWorkingDirectory>$(ProjectDir)..\</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <!-- 与主程序相同：源文件为 UTF-8，编译后的中文字符串使用 GBK；界面文字用宽字符串 L"..." -->
+      <AdditionalOptions>/source-charset:utf-8 /execution-charset:.936 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <!-- 界面类 -->
+    <ClCompile Include="GuiMainYD.cpp" />
+    <ClCompile Include="GuiTextYD.cpp" />
+    <ClCompile Include="ThemeYD.cpp" />
+    <ClCompile Include="CanvasYD.cpp" />
+    <ClCompile Include="ConversationYD.cpp" />
+    <ClCompile Include="SessionYD.cpp" />
+    <ClCompile Include="ViewYD.cpp" />
+    <ClCompile Include="LoginViewYD.cpp" />
+    <ClCompile Include="ChatPanelYD.cpp" />
+    <ClCompile Include="MainViewYD.cpp" />
+    <ClCompile Include="GuiWindowYD.cpp" />
+    <ClCompile Include="DialogYD.cpp" />
+    <ClCompile Include="PageModelYD.cpp" />
+    <ClCompile Include="PageYD.cpp" />
+    <ClCompile Include="PagePanelYD.cpp" />
+    <ClCompile Include="ChatLinkYD.cpp" />
+    <ClCompile Include="PlatformToolsYD.cpp" />
+    <ClCompile Include="AccountPageYD.cpp" />
+    <ClCompile Include="FriendPageYD.cpp" />
+    <ClCompile Include="CrossFriendPageYD.cpp" />
+    <ClCompile Include="GroupSquarePageYD.cpp" />
+    <ClCompile Include="GroupPageYD.cpp" />
+    <ClCompile Include="P2PPageYD.cpp" />
+    <ClCompile Include="ChatRoomPageYD.cpp" />
+    <ClCompile Include="NewFriendsPageYD.cpp" />
+    <ClCompile Include="MomentsPageYD.cpp" />
+    <!-- 共用的业务类（与控制台版、测试项目相同；不含菜单、TCP 等控制台界面类） -->
+    <ClCompile Include="..\UtilYD.cpp" />
+    <ClCompile Include="..\ServiceTypeYD.cpp" />
+    <ClCompile Include="..\DateYD.cpp" />
+    <ClCompile Include="..\FriendYD.cpp" />
+    <ClCompile Include="..\FriendManagerYD.cpp" />
+    <ClCompile Include="..\ServiceBaseYD.cpp" />
+    <ClCompile Include="..\IndependentIdServiceYD.cpp" />
+    <ClCompile Include="..\QQServiceYD.cpp" />
+    <ClCompile Include="..\WeChatServiceYD.cpp" />
+    <ClCompile Include="..\WeiboServiceYD.cpp" />
+    <ClCompile Include="..\WeiShangServiceYD.cpp" />
+    <ClCompile Include="..\GroupPolicyYD.cpp" />
+    <ClCompile Include="..\QQGroupPolicyYD.cpp" />
+    <ClCompile Include="..\WeChatGroupPolicyYD.cpp" />
+    <ClCompile Include="..\SubGroupYD.cpp" />
+    <ClCompile Include="..\GroupYD.cpp" />
+    <ClCompile Include="..\GroupManagerYD.cpp" />
+    <ClCompile Include="..\UserYD.cpp" />
+    <ClCompile Include="..\PlatformYD.cpp" />
+    <ClCompile Include="..\PasswordYD.cpp" />
+    <ClCompile Include="..\DataFileYD.cpp" />
+    <ClCompile Include="..\MessageYD.cpp" />
+    <ClCompile Include="..\MessageCenterYD.cpp" />
+    <ClCompile Include="..\MomentCommentYD.cpp" />
+    <ClCompile Include="..\FriendRequestYD.cpp" />
+    <ClCompile Include="..\GroupListenerYD.cpp" />
+    <ClCompile Include="..\MomentYD.cpp" />
+    <ClCompile Include="..\RecordYD.cpp" />
+    <ClCompile Include="..\DataDirYD.cpp" />
+    <ClCompile Include="..\ChatLogYD.cpp" />
+    <ClCompile Include="..\NetUtilYD.cpp" />
+    <ClCompile Include="..\ChatRoomServerYD.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="GuiTextYD.h" />
+    <ClInclude Include="ThemeYD.h" />
+    <ClInclude Include="CanvasYD.h" />
+    <ClInclude Include="ConversationYD.h" />
+    <ClInclude Include="SessionYD.h" />
+    <ClInclude Include="ViewYD.h" />
+    <ClInclude Include="LoginViewYD.h" />
+    <ClInclude Include="ChatPanelYD.h" />
+    <ClInclude Include="MainViewYD.h" />
+    <ClInclude Include="GuiWindowYD.h" />
+    <ClInclude Include="DialogYD.h" />
+    <ClInclude Include="PageModelYD.h" />
+    <ClInclude Include="PageYD.h" />
+    <ClInclude Include="PagePanelYD.h" />
+    <ClInclude Include="ChatLinkYD.h" />
+    <ClInclude Include="PlatformToolsYD.h" />
+    <ClInclude Include="AccountPageYD.h" />
+    <ClInclude Include="FriendPageYD.h" />
+    <ClInclude Include="CrossFriendPageYD.h" />
+    <ClInclude Include="GroupSquarePageYD.h" />
+    <ClInclude Include="GroupPageYD.h" />
+    <ClInclude Include="P2PPageYD.h" />
+    <ClInclude Include="ChatRoomPageYD.h" />
+    <ClInclude Include="NewFriendsPageYD.h" />
+    <ClInclude Include="MomentsPageYD.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

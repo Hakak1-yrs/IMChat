@@ -1,0 +1,95 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="1-服务账号"><UniqueIdentifier>{1A2B3C4D-0001-4000-8000-000000000001}</UniqueIdentifier></Filter>
+    <Filter Include="2-好友"><UniqueIdentifier>{1A2B3C4D-0002-4000-8000-000000000002}</UniqueIdentifier></Filter>
+    <Filter Include="3-群与管理策略"><UniqueIdentifier>{1A2B3C4D-0003-4000-8000-000000000003}</UniqueIdentifier></Filter>
+    <Filter Include="4-平台与界面"><UniqueIdentifier>{1A2B3C4D-0004-4000-8000-000000000004}</UniqueIdentifier></Filter>
+    <Filter Include="5-工具"><UniqueIdentifier>{1A2B3C4D-0005-4000-8000-000000000005}</UniqueIdentifier></Filter>
+    <Filter Include="6-消息与群聊"><UniqueIdentifier>{1A2B3C4D-0007-4000-8000-000000000007}</UniqueIdentifier></Filter>
+    <Filter Include="数据文件"><UniqueIdentifier>{1A2B3C4D-0006-4000-8000-000000000006}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="ServiceBaseYD.cpp"><Filter>1-服务账号</Filter></ClCompile>
+    <ClCompile Include="IndependentIdServiceYD.cpp"><Filter>1-服务账号</Filter></ClCompile>
+    <ClCompile Include="QQServiceYD.cpp"><Filter>1-服务账号</Filter></ClCompile>
+    <ClCompile Include="WeChatServiceYD.cpp"><Filter>1-服务账号</Filter></ClCompile>
+    <ClCompile Include="WeiboServiceYD.cpp"><Filter>1-服务账号</Filter></ClCompile>
+    <ClCompile Include="UserYD.cpp"><Filter>1-服务账号</Filter></ClCompile>
+    <ClCompile Include="FriendYD.cpp"><Filter>2-好友</Filter></ClCompile>
+    <ClCompile Include="FriendManagerYD.cpp"><Filter>2-好友</Filter></ClCompile>
+    <ClCompile Include="GroupPolicyYD.cpp"><Filter>3-群与管理策略</Filter></ClCompile>
+    <ClCompile Include="QQGroupPolicyYD.cpp"><Filter>3-群与管理策略</Filter></ClCompile>
+    <ClCompile Include="WeChatGroupPolicyYD.cpp"><Filter>3-群与管理策略</Filter></ClCompile>
+    <ClCompile Include="SubGroupYD.cpp"><Filter>3-群与管理策略</Filter></ClCompile>
+    <ClCompile Include="GroupYD.cpp"><Filter>3-群与管理策略</Filter></ClCompile>
+    <ClCompile Include="GroupManagerYD.cpp"><Filter>3-群与管理策略</Filter></ClCompile>
+    <ClCompile Include="PlatformYD.cpp"><Filter>4-平台与界面</Filter></ClCompile>
+    <ClCompile Include="MenuYD.cpp"><Filter>4-平台与界面</Filter></ClCompile>
+    <ClCompile Include="TcpChatYD.cpp"><Filter>4-平台与界面</Filter></ClCompile>
+    <ClCompile Include="main.cpp"><Filter>4-平台与界面</Filter></ClCompile>
+    <ClCompile Include="DataFileYD.cpp"><Filter>5-工具</Filter></ClCompile>
+    <ClCompile Include="WeiShangServiceYD.cpp"><Filter>1-服务账号</Filter></ClCompile>
+    <ClCompile Include="PasswordYD.cpp"><Filter>5-工具</Filter></ClCompile>
+    <ClCompile Include="ChatLogYD.cpp"><Filter>4-平台与界面</Filter></ClCompile>
+    <ClCompile Include="MessageYD.cpp"><Filter>6-消息与群聊</Filter></ClCompile>
+    <ClCompile Include="MessageCenterYD.cpp"><Filter>6-消息与群聊</Filter></ClCompile>
+    <ClCompile Include="MomentCommentYD.cpp"><Filter>6-消息与群聊</Filter></ClCompile>
+    <ClCompile Include="FriendRequestYD.cpp"><Filter>2-好友</Filter></ClCompile>
+    <ClCompile Include="GroupListenerYD.cpp"><Filter>3-群与管理策略</Filter></ClCompile>
+    <ClCompile Include="MomentYD.cpp"><Filter>6-消息与群聊</Filter></ClCompile>
+    <ClCompile Include="RecordYD.cpp"><Filter>6-消息与群聊</Filter></ClCompile>
+    <ClCompile Include="NetUtilYD.cpp"><Filter>6-消息与群聊</Filter></ClCompile>
+    <ClCompile Include="GroupChatRoomYD.cpp"><Filter>6-消息与群聊</Filter></ClCompile>
+    <ClCompile Include="ChatRoomServerYD.cpp"><Filter>6-消息与群聊</Filter></ClCompile>
+    <ClCompile Include="UtilYD.cpp"><Filter>5-工具</Filter></ClCompile>
+    <ClCompile Include="ServiceTypeYD.cpp"><Filter>5-工具</Filter></ClCompile>
+    <ClCompile Include="DateYD.cpp"><Filter>5-工具</Filter></ClCompile>
+    <ClCompile Include="DataDirYD.cpp"><Filter>5-工具</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ServiceBaseYD.h"><Filter>1-服务账号</Filter></ClInclude>
+    <ClInclude Include="IndependentIdServiceYD.h"><Filter>1-服务账号</Filter></ClInclude>
+    <ClInclude Include="QQServiceYD.h"><Filter>1-服务账号</Filter></ClInclude>
+    <ClInclude Include="WeChatServiceYD.h"><Filter>1-服务账号</Filter></ClInclude>
+    <ClInclude Include="WeiboServiceYD.h"><Filter>1-服务账号</Filter></ClInclude>
+    <ClInclude Include="UserYD.h"><Filter>1-服务账号</Filter></ClInclude>
+    <ClInclude Include="FriendYD.h"><Filter>2-好友</Filter></ClInclude>
+    <ClInclude Include="FriendManagerYD.h"><Filter>2-好友</Filter></ClInclude>
+    <ClInclude Include="GroupPolicyYD.h"><Filter>3-群与管理策略</Filter></ClInclude>
+    <ClInclude Include="QQGroupPolicyYD.h"><Filter>3-群与管理策略</Filter></ClInclude>
+    <ClInclude Include="WeChatGroupPolicyYD.h"><Filter>3-群与管理策略</Filter></ClInclude>
+    <ClInclude Include="SubGroupYD.h"><Filter>3-群与管理策略</Filter></ClInclude>
+    <ClInclude Include="GroupYD.h"><Filter>3-群与管理策略</Filter></ClInclude>
+    <ClInclude Include="GroupManagerYD.h"><Filter>3-群与管理策略</Filter></ClInclude>
+    <ClInclude Include="PlatformYD.h"><Filter>4-平台与界面</Filter></ClInclude>
+    <ClInclude Include="MenuYD.h"><Filter>4-平台与界面</Filter></ClInclude>
+    <ClInclude Include="TcpChatYD.h"><Filter>4-平台与界面</Filter></ClInclude>
+    <ClInclude Include="DataFileYD.h"><Filter>5-工具</Filter></ClInclude>
+    <ClInclude Include="WeiShangServiceYD.h"><Filter>1-服务账号</Filter></ClInclude>
+    <ClInclude Include="PasswordYD.h"><Filter>5-工具</Filter></ClInclude>
+    <ClInclude Include="ChatLogYD.h"><Filter>4-平台与界面</Filter></ClInclude>
+    <ClInclude Include="MessageYD.h"><Filter>6-消息与群聊</Filter></ClInclude>
+    <ClInclude Include="MessageCenterYD.h"><Filter>6-消息与群聊</Filter></ClInclude>
+    <ClInclude Include="MomentCommentYD.h"><Filter>6-消息与群聊</Filter></ClInclude>
+    <ClInclude Include="FriendRequestYD.h"><Filter>2-好友</Filter></ClInclude>
+    <ClInclude Include="GroupListenerYD.h"><Filter>3-群与管理策略</Filter></ClInclude>
+    <ClInclude Include="MomentYD.h"><Filter>6-消息与群聊</Filter></ClInclude>
+    <ClInclude Include="RecordYD.h"><Filter>6-消息与群聊</Filter></ClInclude>
+    <ClInclude Include="NetUtilYD.h"><Filter>6-消息与群聊</Filter></ClInclude>
+    <ClInclude Include="GroupChatRoomYD.h"><Filter>6-消息与群聊</Filter></ClInclude>
+    <ClInclude Include="ChatRoomServerYD.h"><Filter>6-消息与群聊</Filter></ClInclude>
+    <ClInclude Include="UtilYD.h"><Filter>5-工具</Filter></ClInclude>
+    <ClInclude Include="ServiceTypeYD.h"><Filter>5-工具</Filter></ClInclude>
+    <ClInclude Include="DateYD.h"><Filter>5-工具</Filter></ClInclude>
+    <ClInclude Include="DataDirYD.h"><Filter>5-工具</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="data\users.txt"><Filter>数据文件</Filter></None>
+    <None Include="data\accounts.txt"><Filter>数据文件</Filter></None>
+    <None Include="data\friends.txt"><Filter>数据文件</Filter></None>
+    <None Include="data\groups.txt"><Filter>数据文件</Filter></None>
+    <None Include="data\subgroups.txt"><Filter>数据文件</Filter></None>
+    <None Include="data\messages.txt"><Filter>数据文件</Filter></None>
+  </ItemGroup>
+</Project>
