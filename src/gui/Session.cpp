@@ -1,6 +1,7 @@
 #include "Session.h"
 #include <algorithm>
 #include <map>
+#include "Util.h"
 
 Session::Session(Platform& platform) : platform_(platform) {}
 
@@ -212,7 +213,7 @@ Group* Session::groupOf(const Conversation& c) const {
 
 bool Session::messagesChanged() {
     std::error_code ec;
-    const std::filesystem::path file(platform_.dataDir() + "messages.txt");
+    const std::filesystem::path file = Util::pathOf(platform_.dataDir() + "messages.txt");
     auto stamp = std::filesystem::last_write_time(file, ec);
     if (ec) stamp = {};
     std::uintmax_t size = std::filesystem::file_size(file, ec);

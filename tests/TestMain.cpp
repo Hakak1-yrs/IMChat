@@ -132,13 +132,14 @@ const char* kSubGroups = R"(# 服务 群号 讨论组名 成员列表
 QQ 1001 课设讨论组 10001,10002,10003
 )";
 
+// 路径一律经 Util::pathOf 构造：目录名可能含中文，直接用 std::string 构造会按系统代码页解释
 void writeFile(const std::string& path, const std::string& bytes) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    std::ofstream out(Util::pathOf(path), std::ios::binary | std::ios::trunc);
     out << bytes;
 }
 
 std::string readFile(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(Util::pathOf(path), std::ios::binary);
     std::ostringstream buffer;
     buffer << in.rdbuf();
     return buffer.str();
@@ -148,8 +149,8 @@ std::string readFile(const std::string& path) {
 std::string freshDir(const std::string& name) {
     std::string dir = kRoot + name + "\\";
     std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
+    fs::remove_all(Util::pathOf(dir), ec);
+    fs::create_directories(Util::pathOf(dir), ec);
     writeFile(dir + "users.txt", kUsers);
     writeFile(dir + "accounts.txt", kAccounts);
     writeFile(dir + "friends.txt", kFriends);
@@ -533,6 +534,25 @@ void testFileEncodings() {
     closePlatform(p);
     std::string saved = readFile(dir + "users.txt");
     CHECK(contains(saved, "1 张三") && saved.compare(0, 3, "\xEF\xBB\xBF") != 0);   // UTF-8，不带 BOM
+}
+
+// 数据目录在含中文的路径下（如 C:\Users\张三\...）：读写数据文件、追加消息、冲突另存都要正常
+void testNonAsciiDataPath() {
+    std::string dir = freshDir("中文目录");
+    std::string msg;
+    {
+        auto p = openPlatform(dir);
+        CHECK(p->findUser(1) != nullptr);   // 读到了基线数据
+        CHECK(p->sendPrivate(account(*p, ServiceType::QQ, "10001"), "10002", "路径含中文也能收发", msg));
+        account(*p, ServiceType::QQ, "10001").setNickname("小张同学");   // 退出时写回 accounts.txt（临时文件 + 原子替换）
+        closePlatform(p);
+    }
+    CHECK(contains(readFile(dir + "messages.txt"), "路径含中文也能收发"));
+    CHECK(!fs::exists(Util::pathOf(dir + "accounts.txt.tmp")));
+    auto p = openPlatform(dir);
+    CHECK(account(*p, ServiceType::QQ, "10001").nickname() == "小张同学");
+    CHECK(p->messages().conversation(ServiceType::QQ, "10001", "10002").size() == 1);
+    closePlatform(p);
 }
 
 void testUtf8Text() {
@@ -954,6 +974,7 @@ int main() {
     run("两个窗口同时修改：整组另存、不混合", testConflictKeepsDataConsistent);
     run("内容没变时不写文件", testUnchangedNotWritten);
     run("数据文件编码：带 BOM 的 UTF-8、旧版 GBK 自动转换", testFileEncodings);
+    run("数据目录路径含中文", testNonAsciiDataPath);
     run("UTF-8 文本：按字符计数、截断、四字节字符", testUtf8Text);
     run("data 目录不存在时自动创建", testMissingDataDir);
     run("日期合法性与密码记录", testDateAndPassword);
