@@ -36,13 +36,6 @@ long long number(const json& request, const char* key, long long fallback) {
     return it != request.end() && it->is_number_integer() ? it->get<long long>() : fallback;
 }
 
-// 从末尾找 sender 发的最后一条消息：刚保存的那条（拿到它的序号和时间）
-std::optional<Message> lastFrom(const std::vector<Message>& history, const std::string& sender) {
-    for (auto it = history.rbegin(); it != history.rend(); ++it) {
-        if (it->sender() == sender) return *it;
-    }
-    return std::nullopt;
-}
 
 json memberJson(const GroupMemberInfo& m) {
     return json{ { "id", m.id },         { "nickname", m.nickname },       { "owner", m.owner },
@@ -288,13 +281,13 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
         Group* group = platform_.groups().find(me->type(), static_cast<int>(groupNo));
         if (!group) error = "群 " + std::to_string(groupNo) + " 不存在";
         else if (platform_.sendGroupMessage(*me, *group, text, error)) {
-            saved = lastFrom(platform_.messages().groupHistory(me->type(), group->groupNo()), me->id());
+            saved = latestFrom(*me);
             for (const std::string& member : group->members()) {
                 if (member != me->id()) receivers.push_back(member);
             }
         }
     } else if (platform_.sendPrivate(*me, to, text, error)) {
-        saved = lastFrom(platform_.messages().conversation(me->type(), me->id(), to), me->id());
+        saved = latestFrom(*me);
         receivers.push_back(to);
     }
 
@@ -319,8 +312,19 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
     send(session.connection, MessageType::SEND_MSG_ACK, ack);
 
     // 在线的接收者立即推送；不在线的上线后通过 SYNC_REQ 取到
-    const json push = messageJson(*saved);
-    for (const std::string& receiver : receivers) pushTo(service + " " + receiver, MessageType::MSG_PUSH, push);
+    // 群消息要推给很多人：只编码一次，同一份字节发给每个在线的接收者，省去重复的 JSON 序列化
+    Packet push;
+    push.type = MessageType::MSG_PUSH;
+    push.body = messageJson(*saved);
+    const std::string bytes = push.encode();
+    for (const std::string& receiver : receivers) pushBytesTo(service + " " + receiver, bytes);
+}
+
+std::optional<Message> ChatServer::latestFrom(const ServiceBase& me) const {
+    // 刚保存的那条消息（拿到它的序号和时间）。所有写入都在事件循环线程里，取到的一定是它
+    Message message(0, me.type(), false, "", "", "", "");
+    if (!platform_.messages().lastFrom(me.type(), me.id(), message)) return std::nullopt;
+    return message;
 }
 
 void ChatServer::handleSync(Session& session, const json& request) {
@@ -376,6 +380,13 @@ void ChatServer::pushTo(const std::string& accountKey, MessageType type, const j
     if (online == online_.end()) return;
     auto receiver = sessions_.find(online->second);
     if (receiver != sessions_.end()) send(receiver->second.connection, type, body);
+}
+
+void ChatServer::pushBytesTo(const std::string& accountKey, const std::string& bytes) {
+    auto online = online_.find(accountKey);
+    if (online == online_.end()) return;
+    auto receiver = sessions_.find(online->second);
+    if (receiver != sessions_.end()) receiver->second.connection->send(bytes);
 }
 
 // ======================== 通用请求（CALL_REQ） ========================

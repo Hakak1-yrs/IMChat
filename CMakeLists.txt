@@ -76,6 +76,10 @@ target_link_libraries(imchat_client PUBLIC imchat_reactor imchat_protocol)
 add_executable(IMChatCli src/cli/main.cpp)
 target_link_libraries(IMChatCli PRIVATE imchat_client)
 
+# ---- load-testing tool ----
+add_executable(IMChatBench src/bench/main.cpp)
+target_link_libraries(IMChatBench PRIVATE imchat_reactor imchat_protocol imchat_core)
+
 # ---- tests ----
 enable_testing()
 add_executable(IMChatTests tests/TestMain.cpp)

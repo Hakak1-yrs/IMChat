@@ -9,7 +9,9 @@
 // 消息中心：私信、群消息以及各种社交事件的存储与查询，数据保存在 data\messages.txt。
 //
 // 1. 文件只追加、不改写：两个程序窗口可以同时写，互不覆盖（与 ChatLog 相同，用 FILE_APPEND_DATA 方式写）；
-// 2. 每次查询都重新读文件，另一个窗口刚写入的内容这边马上就能看到；
+// 2. 解析结果缓存在内存里。每次查询前看一眼文件大小，只读取、解析上次之后新追加的部分（增量读取）：
+//    另一个窗口刚写入的内容这边马上就能看到，又不必每次都把整个文件重新解析一遍。
+//    （压测发现原来每发一条消息都要完整解析两遍文件，消息一多就越来越慢，见 docs/BENCHMARK.md）
 // 3. 记录格式（每行一条，第一个字母是类型，第二项是服务）：
 //      M 服务 P/G 接收者或群号 发送者 日期 时间 内容      一条消息（P 私信，G 群消息；发送者为 # 表示群系统提示）
 //      W 服务 消息序号 撤回者 日期 时间                     撤回一条消息
@@ -29,6 +31,9 @@
 class MessageCenter {
 public:
     explicit MessageCenter(const std::string& filePath);
+    ~MessageCenter();
+    MessageCenter(const MessageCenter&) = delete;
+    MessageCenter& operator=(const MessageCenter&) = delete;
 
     // ---- 消息（内容由调用者检查过；返回 false 表示写文件失败）----
     bool postPrivate(ServiceType service, const std::string& from, const std::string& to, const std::string& text);
@@ -43,6 +48,8 @@ public:
     // 与 me 有关的全部消息：me 收发的私信，以及 groupNos 这些群中的群消息（只读一次文件，图形界面的会话列表使用）
     std::vector<Message> messagesFor(ServiceType service, const std::string& me, const std::vector<int>& groupNos) const;
     bool findMessage(ServiceType service, int seq, Message& out) const;
+    // sender 最近发的一条消息（刚保存的那条：拿到它的序号和时间）。从最新的往前找，通常第一条就是
+    bool lastFrom(ServiceType service, const std::string& sender, Message& out) const;
     // 未读：不计系统提示、撤回的消息和自己发的消息
     std::map<std::string, int> unreadPrivate(ServiceType service, const std::string& me) const;   // 发送者 → 条数
     std::map<int, int> unreadGroups(ServiceType service, const std::string& me, const std::vector<int>& groupNos) const;
@@ -58,15 +65,25 @@ public:
     void markRead(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader, int seq);
 
 private:
+    // 已经解析过的部分：仍然有效的消息和事件记录、已读位置，以及继续解析需要的状态
     struct State {
-        std::vector<Message> messages;        // 仍然有效的消息
-        std::vector<Record> records;          // 仍然有效的事件记录
-        std::map<std::string, int> readMarks;   // "服务 范围 对象 读者" → 已读到的序号
+        std::map<int, Message> messages;          // 序号 → 消息（按序号有序）
+        std::vector<Record> records;
+        std::map<std::string, int> readMarks;     // "服务 范围 对象 读者" → 已读到的序号
+        std::map<std::string, std::string> revokedBy;   // "服务 序号" → 撤回者
+        int count = 0;                            // 已分配的最大序号
+        int lineNo = 0;                           // 已解析的行数
+        unsigned long long offset = 0;            // 已解析到文件的哪个字节（之后都是新追加的）
     };
-    State load() const;
+    const State& refresh() const;   // 调用者持有 mutex_：读取新追加的内容，返回最新状态
+    void parseLine(State& state, const std::string& line) const;
+    void clear(State& state, const std::string& code, const std::string& scope, const std::string& target) const;
+    bool openFile() const;
     static int markOf(const State& state, const std::string& key);
     bool append(const std::string& line);
 
     std::string filePath_;
-    mutable std::mutex mutex_;   // 群聊室的网络线程和主线程可能同时写消息
+    mutable std::mutex mutex_;   // 群聊室的网络线程和主线程可能同时读写
+    mutable State state_;
+    mutable void* file_ = nullptr;   // 一直打开着的文件句柄（读 + 追加写），省去每次打开、关闭文件的开销
 };

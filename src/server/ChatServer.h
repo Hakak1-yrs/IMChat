@@ -4,6 +4,7 @@
 #include <deque>
 #include <functional>
 #include <initializer_list>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -101,10 +102,12 @@ private:
     void handleCall(Session& session, const nlohmann::json& request);
 
     nlohmann::json messageJson(const Message& message) const;   // 推送和同步共用的消息格式
+    std::optional<Message> latestFrom(const ServiceBase& me) const;   // me 刚保存的那条消息
     void notifyPresence(const std::string& accountKey, bool online);   // 通知在线的好友：我上线 / 下线了
     bool isOnline(const std::string& accountKey) const;
     ServiceBase* accountOf(const Session& session) const;
     void pushTo(const std::string& accountKey, MessageType type, const nlohmann::json& body);   // 对方在线才发
+    void pushBytesTo(const std::string& accountKey, const std::string& bytes);   // 发送已经编码好的帧（群发时只编码一次）
     void send(const TcpConnection::Ptr& connection, MessageType type, nlohmann::json body);
     void sendError(const TcpConnection::Ptr& connection, const nlohmann::json& request, ErrorCode code,
                    const std::string& message);
