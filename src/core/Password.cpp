@@ -3,7 +3,9 @@
 #include <bcrypt.h>
 #include <vector>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "bcrypt.lib")   // 链接 Windows CNG 密码学库
+#endif
 
 namespace {
 

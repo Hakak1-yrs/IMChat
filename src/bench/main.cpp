@@ -32,7 +32,9 @@
 
 #ifdef _WIN32
 #include <shellapi.h>
+#ifdef _MSC_VER
 #pragma comment(lib, "shell32.lib")
+#endif
 #endif
 
 using json = nlohmann::json;

@@ -25,22 +25,12 @@ std::string gbkToUtf8(const std::string& text) {
     return result;
 }
 
-}  // namespace
-
-DataFile::DataFile(const std::string& dataDir, const std::string& fileName)
-    : path_(Util::pathOf(dataDir) / Util::pathOf(fileName)),
-      tempPath_(Util::pathOf(dataDir) / Util::pathOf(fileName + ".tmp")),
-      fileName_(fileName) {}
-
-bool DataFile::read(std::string& text) {
-    convertedFromGbk_ = false;
-    std::ifstream in(path_, std::ios::binary);
-    if (!in) {
-        existed_ = false;
-        snapshot_.clear();
-        text.clear();
-        return false;
-    }
+// 读入整个文件并统一成程序内部的形式；文件不存在（或打不开）返回 false
+bool readNormalized(const fs::path& path, std::string& text, bool& convertedFromGbk) {
+    convertedFromGbk = false;
+    text.clear();
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
     std::ostringstream buffer;
     buffer << in.rdbuf();
     text = buffer.str();
@@ -50,16 +40,25 @@ bool DataFile::read(std::string& text) {
     if (bom) text.erase(0, 3);
     if (!isValidUtf8(text)) {
         text = gbkToUtf8(text);
-        convertedFromGbk_ = true;
+        convertedFromGbk = true;
     }
     // 统一换行符：记事本或旧版本程序写出的 \r\n 与程序生成的 \n 视为相同内容，
     // 避免“内容其实没变”却被判定为已修改
     text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
-    snapshot_ = text;
-    existed_ = true;
-    std::error_code ec;
-    stamp_ = fs::last_write_time(path_, ec);
     return true;
+}
+
+}  // namespace
+
+DataFile::DataFile(const std::string& dataDir, const std::string& fileName)
+    : path_(Util::pathOf(dataDir) / Util::pathOf(fileName)),
+      tempPath_(Util::pathOf(dataDir) / Util::pathOf(fileName + ".tmp")),
+      fileName_(fileName) {}
+
+bool DataFile::read(std::string& text) {
+    existed_ = readNormalized(path_, text, convertedFromGbk_);
+    snapshot_ = text;
+    return existed_;
 }
 
 bool DataFile::convertedFromGbk() const { return convertedFromGbk_; }
@@ -69,12 +68,13 @@ bool DataFile::hasChanges(const std::string& text) const {
 }
 
 bool DataFile::modifiedOutside() const {
-    std::error_code ec;
-    bool existsNow = fs::exists(path_, ec);
-    if (existsNow != existed_) return true;
-    if (!existsNow) return false;
-    fs::file_time_type now = fs::last_write_time(path_, ec);
-    return ec || now != stamp_;   // 读不到修改时间时按“被改过”处理，宁可另存也不覆盖
+    // 比较内容而不是修改时间：修改时间的精度因平台而异（MinGW 的 libstdc++ 在 Windows 上只精确到秒），
+    // 两个窗口在同一秒内先后保存时，只看修改时间会漏掉冲突。数据文件都不大，重读一遍的代价可以忽略
+    std::string disk;
+    bool converted = false;
+    const bool existsNow = readNormalized(path_, disk, converted);
+    if (existsNow != existed_) return true;   // 被删除或新建（读不到时也按“被改过”处理，宁可另存也不覆盖）
+    return existsNow && disk != snapshot_;
 }
 
 bool DataFile::adoptIfSame(const std::string& text) {
@@ -88,8 +88,6 @@ bool DataFile::adoptIfSame(const std::string& text) {
     snapshot_ = text;   // 文件里已经是本窗口要写的内容（另一个窗口做了同样的修改），记下来，不必再写
     existed_ = true;
     convertedFromGbk_ = false;
-    std::error_code ec;
-    stamp_ = fs::last_write_time(path_, ec);
     return true;
 }
 
@@ -120,8 +118,6 @@ bool DataFile::commit() {
     snapshot_ = prepared_;
     existed_ = true;
     convertedFromGbk_ = false;
-    std::error_code ec;
-    stamp_ = fs::last_write_time(path_, ec);
     return true;
 }
 

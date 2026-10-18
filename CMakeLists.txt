@@ -16,9 +16,14 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 add_library(imchat_options INTERFACE)
 target_compile_options(imchat_options INTERFACE
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8 /W4 /permissive- /MP>)
+target_compile_options(imchat_options INTERFACE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra>)
 option(IMCHAT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 if(IMCHAT_WARNINGS_AS_ERRORS)
-    target_compile_options(imchat_options INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/WX>)
+    target_compile_options(imchat_options INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/WX> $<$<CXX_COMPILER_ID:GNU,Clang>:-Werror>)
+endif()
+if(MINGW)
+    # MinGW's headers default to an older Windows; BCryptHash pseudo-handles and per-monitor DPI need Windows 10.
+    target_compile_definitions(imchat_options INTERFACE _WIN32_WINNT=0x0A00 WINVER=0x0A00 NTDDI_VERSION=0x0A00000C)
 endif()
 
 # ---- core: domain model, persistence, message log ----
@@ -42,7 +47,10 @@ target_link_libraries(IMChatConsole PRIVATE imchat_net)
 file(GLOB GUI_SOURCES CONFIGURE_DEPENDS src/gui/*.cpp src/gui/*.h)
 add_executable(IMChatClient WIN32 ${GUI_SOURCES})
 target_compile_definitions(IMChatClient PRIVATE NOMINMAX)
-target_link_libraries(IMChatClient PRIVATE imchat_net imchat_client d2d1 dwrite comctl32 dwmapi shell32)
+target_link_libraries(IMChatClient PRIVATE imchat_net imchat_client d2d1 dwrite comctl32 dwmapi shell32 dbghelp)
+if(MINGW)
+    target_link_options(IMChatClient PRIVATE -municode)   # the GUI's entry point is wWinMain
+endif()
 
 # ---- protocol: frame codec and JSON packets (portable) ----
 file(GLOB PROTOCOL_SOURCES CONFIGURE_DEPENDS src/protocol/*.cpp src/protocol/*.h)

@@ -1,6 +1,8 @@
 #include "NetUtil.h"
 
+#ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")   // 链接 Winsock 静态库
+#endif
 
 bool NetUtil::sendAll(SOCKET sock, const std::string& data) {
     size_t sent = 0;

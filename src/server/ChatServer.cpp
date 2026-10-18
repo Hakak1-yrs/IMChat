@@ -119,7 +119,7 @@ std::size_t ChatServer::onlineCount() const { return online_.size(); }
 
 void ChatServer::onConnection(const TcpConnection::Ptr& connection) {
     loop_.runInLoop([this, connection] {
-        sessions_[connection->id()] = Session{ connection };
+        sessions_[connection->id()].connection = connection;
         Log::debug("新连接 #" + std::to_string(connection->id()) + " 来自 " + connection->peer());
     });
 }

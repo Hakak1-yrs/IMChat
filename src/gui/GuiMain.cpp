@@ -12,8 +12,12 @@
 
 #include <dbghelp.h>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "shell32.lib")
+#endif
+#ifdef _MSC_VER
 #pragma comment(lib, "dbghelp.lib")
+#endif
 
 namespace {
 
@@ -37,7 +41,8 @@ LONG WINAPI writeCrashLog(EXCEPTION_POINTERS* info) {
         symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
         symbol->MaxNameLen = 255;
         const DWORD64 address = reinterpret_cast<DWORD64>(frames[i]);
-        IMAGEHLP_LINE64 line{ sizeof(IMAGEHLP_LINE64) };
+        IMAGEHLP_LINE64 line{};
+        line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
         DWORD offset = 0;
         const bool named = SymFromAddr(process, address, nullptr, symbol);
         const bool lined = SymGetLineFromAddr64(process, address, &offset, &line);

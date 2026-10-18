@@ -1,7 +1,11 @@
 #include "Canvas.h"
 
+#ifdef _MSC_VER
 #pragma comment(lib, "d2d1.lib")
+#endif
+#ifdef _MSC_VER
 #pragma comment(lib, "dwrite.lib")
+#endif
 
 namespace {
 const wchar_t* kFontFamily = L"Microsoft YaHei UI";   // 微软雅黑：中文界面的系统字体

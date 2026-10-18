@@ -9,10 +9,16 @@
 #include "MainView.h"
 #include "Theme.h"
 
+#ifdef _MSC_VER
 #pragma comment(lib, "comctl32.lib")
+#endif
+#ifdef _MSC_VER
 #pragma comment(lib, "dwmapi.lib")
+#endif
 // 使用新版通用控件（输入框的占位提示文字需要它）
+#ifdef _MSC_VER
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+#endif
 
 namespace {
 
