@@ -73,7 +73,7 @@
 
 - 测试框架换成 GoogleTest；为协议编解码和服务端逻辑补充单元测试和集成测试。
 - 配置 GitHub Actions：Windows 和 Linux 上分别编译、跑测试；Linux 上额外开 AddressSanitizer / ThreadSanitizer。
-- 写一个压测工具，模拟上千个客户端同时登录、收发消息，记录吞吐量和 p50/p99 延迟。
+- [x] 压测工具 `IMChatBench`：多线程事件循环、数百条连接，统计吞吐量和 p50/p90/p99 延迟。压测发现并解决了两个瓶颈：消息文件改为增量读取（私信 104 → 3.8 万条/秒），发送改为合并写（群消息 1.4 千 → 1.6 万条/秒），见 [BENCHMARK.md](BENCHMARK.md)。
 - 加入 clang-format、clang-tidy 和结构化日志。
 
 ## 阶段 4：功能

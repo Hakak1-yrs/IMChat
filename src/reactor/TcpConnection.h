@@ -59,6 +59,7 @@ private:
     Buffer input_;
     Buffer output_;
     bool watchingWrite_ = false;
+    bool flushQueued_ = false;   // 已经安排在本轮事件处理完后写出输出缓冲区
     std::chrono::steady_clock::time_point lastReceive_;
     std::any context_;
     MessageCallback onMessage_;

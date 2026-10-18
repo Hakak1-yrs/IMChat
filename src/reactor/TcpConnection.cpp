@@ -121,30 +121,21 @@ void TcpConnection::handleWrite() {
 
 void TcpConnection::sendInLoop(const std::string& data) {
     if (state_ != State::CONNECTED) return;
-    std::size_t written = 0;
-    if (output_.readableBytes() == 0) {   // 缓冲区里没有排队的数据时才能直接写，否则会打乱顺序
-        while (written < data.size()) {
-            const long n = SocketOps::sendSome(socket_, data.data() + written, data.size() - written);
-            if (n > 0) {
-                written += static_cast<std::size_t>(n);
-                continue;
-            }
-            const int error = SocketOps::lastError();
-            if (n < 0 && SocketOps::interrupted(error)) continue;
-            if (n < 0 && SocketOps::wouldBlock(error)) break;
-            handleClose();
-            return;
-        }
+    // 先放进输出缓冲区，本轮事件处理完之后再统一写：同一轮里发给这条连接的多条消息（比如群消息的推送）
+    // 合并成一次 send 系统调用。压测中群消息的吞吐因此明显提高，见 docs/BENCHMARK.md
+    output_.append(data.data(), data.size());
+    if (output_.readableBytes() > kHighWaterMark) {
+        Log::warn("连接 " + peer_ + " 的待发送数据超过上限，对方可能已停止接收，断开连接");
+        handleClose();
+        return;
     }
-    if (written < data.size()) {
-        output_.append(data.data() + written, data.size() - written);
-        if (output_.readableBytes() > kHighWaterMark) {
-            Log::warn("连接 " + peer_ + " 的待发送数据超过上限，对方可能已停止接收，断开连接");
-            handleClose();
-            return;
-        }
-    }
-    updateInterest();
+    if (flushQueued_ || watchingWrite_) return;   // 已经安排了写；或者正在等可写事件，到时会一起写出去
+    flushQueued_ = true;
+    Ptr self = shared_from_this();
+    loop_.queueInLoop([self] {
+        self->flushQueued_ = false;
+        if (self->state_ != State::CLOSED) self->handleWrite();
+    });
 }
 
 void TcpConnection::updateInterest() {
