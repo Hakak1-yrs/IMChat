@@ -91,10 +91,10 @@ void LoginView::paint(Canvas& c) {
     // 标志与标题
     const D2D1_RECT_F logo = D2D1::RectF(cx - 28, card.top + 40, cx + 28, card.top + 96);
     c.fillRound(logo, 16, accent);
-    c.text(L"腾", logo, 26, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
-    c.text(L"腾*立体社交平台", D2D1::RectF(card.left, card.top + 110, card.right, card.top + 140), 22,
+    c.text(L"IM", logo, 22, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+    c.text(L"IMChat", D2D1::RectF(card.left, card.top + 110, card.right, card.top + 140), 22,
            Theme::rgb(Theme::TEXT), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
-    c.text(L"模拟即时通信系统 · 图形界面版", D2D1::RectF(card.left, card.top + 142, card.right, card.top + 164), 13,
+    c.text(L"即时通信 · QQ / 微信 / 微博 / 微商", D2D1::RectF(card.left, card.top + 142, card.right, card.top + 164), 13,
            Theme::rgb(Theme::TEXT3), Align::CENTER);
 
     // 服务选择（分段按钮）

@@ -38,7 +38,7 @@ int WINAPI wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE, _In_ PWSTR, _In
         log.str("");
         GuiWindow window(instance, platform);
         if (!window.create(showCommand)) {
-            MessageBoxW(nullptr, L"窗口创建失败（Direct2D 初始化失败）。", L"腾*立体社交", MB_ICONERROR);
+            MessageBoxW(nullptr, L"窗口创建失败（Direct2D 初始化失败）。", L"IMChat", MB_ICONERROR);
             code = 1;
         } else {
             // 演示用：IMChatClient.exe --login QQ 10002 123456 直接登录，方便同时打开几个窗口演示多人聊天

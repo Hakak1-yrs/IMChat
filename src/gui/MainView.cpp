@@ -101,7 +101,7 @@ std::string MainView::selectedKey() const { return showingPage() ? pages_.page()
 
 void MainView::updateTitle() {
     ServiceBase* me = window_.session().current();
-    if (me) window_.setTitle(L"腾*立体社交 · " + GuiText::wide(me->serviceName() + " " + me->displayName()));
+    if (me) window_.setTitle(L"IMChat · " + GuiText::wide(me->serviceName() + " " + me->displayName()));
 }
 
 // ======================== 页面切换 ========================
@@ -388,7 +388,7 @@ void MainView::paintRail(Canvas& c) {
 
     const D2D1_RECT_F logo = D2D1::RectF(cx - 20, r.top + 22, cx + 20, r.top + 62);
     c.fillRound(logo, 12, accent);
-    c.text(L"腾", logo, 18, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+    c.text(L"IM", logo, 15, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
 
     float y = r.top + 88;
     std::vector<ServiceBase*> services = session.user()->services();

@@ -49,7 +49,7 @@ bool GuiWindow::create(int showCommand) {
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     const int x = work.left + (work.right - work.left - width) / 2, y = work.top + (work.bottom - work.top - height) / 2;
-    hwnd_ = CreateWindowExW(0, kClassName, L"腾*立体社交", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, width, height,
+    hwnd_ = CreateWindowExW(0, kClassName, L"IMChat", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, width, height,
                             nullptr, nullptr, instance_, this);
     if (!hwnd_) return false;
     // Windows 11：标题栏改成与界面一致的浅色（Windows 10 不支持，调用失败也没有影响）
@@ -74,7 +74,7 @@ int GuiWindow::run() {
 }
 
 void GuiWindow::showLogin() {
-    setTitle(L"腾*立体社交 · 登录");
+    setTitle(L"IMChat · 登录");
     switchTo(login_.get());
 }
 
