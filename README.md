@@ -141,6 +141,8 @@ docs/          协议、路线图、截图
 ctest --test-dir build -C Release
 ```
 
+每次推送都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Windows 上编译（警告视为错误）、运行全部测试、乱序重复运行单元测试，并跑一遍私信和群消息的压测，确认推送一条不少。
+
 - `tests/TestMain.cpp`（356 项检查）：直接调用业务接口，每个用例从同一份基线数据开始，在独立的临时目录中运行。覆盖账号绑定规则、两种群模式的权限、模式切换不损坏数据、保存与重新加载、加载时修复不一致的数据、两个窗口同时修改时的冲突处理、编码转换、含中文的数据路径、好友申请、撤回、朋友圈可见范围等。
 - `tests/unit/`（GoogleTest，60 个用例）：
   - 协议：半包、粘包、非法长度、JSON 往返。

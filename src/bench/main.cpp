@@ -16,6 +16,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -84,6 +85,7 @@ struct Config {
     int window = 1;        // 每个客户端同时在途（发出还没收到回执）的消息数上限
     bool group = false;
     int groupNo = 0;
+    std::string runId;     // 本次运行的随机编号，拼进 clientMsgId
 };
 
 // 全部客户端共享的计数
@@ -134,7 +136,8 @@ private:
 
     void sendNext() {
         if (sent_ >= config_.messages) return;
-        const std::string id = account_ + "-" + std::to_string(++sent_);
+        // clientMsgId 每次运行都不同：服务端按它去重，重复的编号会被当成重发，直接返回原来的回执、不再保存和推送
+        const std::string id = config_.runId + "-" + account_ + "-" + std::to_string(++sent_);
         json request = { { "clientMsgId", id }, { "text", "压测消息 " + id } };
         if (config_.group) request["groupNo"] = config_.groupNo;
         else request["to"] = peer_;
@@ -246,6 +249,7 @@ int run(Config config, const std::string& dataDir) {
         return 1;
     }
     config.threads = std::max(1, std::min(config.threads, config.clients));
+    config.runId = std::to_string(std::random_device{}());
     std::cout << "服务器 " << config.host << ":" << config.port << "，" << config.clients << " 个客户端，" << config.threads
               << " 个线程，每个客户端发 " << config.messages << " 条" << (config.group ? "群消息" : "私信") << "，窗口 "
               << config.window << "\n";
