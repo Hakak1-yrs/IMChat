@@ -44,10 +44,54 @@ add_executable(IMChatClient WIN32 ${GUI_SOURCES})
 target_compile_definitions(IMChatClient PRIVATE NOMINMAX)
 target_link_libraries(IMChatClient PRIVATE imchat_net d2d1 dwrite comctl32 dwmapi shell32)
 
+# ---- protocol: frame codec and JSON packets (portable) ----
+file(GLOB PROTOCOL_SOURCES CONFIGURE_DEPENDS src/protocol/*.cpp src/protocol/*.h)
+add_library(imchat_protocol STATIC ${PROTOCOL_SOURCES})
+target_include_directories(imchat_protocol PUBLIC src/protocol)
+target_include_directories(imchat_protocol SYSTEM PUBLIC third_party)
+target_link_libraries(imchat_protocol PUBLIC imchat_options)
+
+# ---- reactor: non-blocking TCP networking with an event loop (portable) ----
+file(GLOB REACTOR_SOURCES CONFIGURE_DEPENDS src/reactor/*.cpp src/reactor/*.h)
+add_library(imchat_reactor STATIC ${REACTOR_SOURCES})
+target_include_directories(imchat_reactor PUBLIC src/reactor)
+target_link_libraries(imchat_reactor PUBLIC imchat_options)
+if(WIN32)
+    # WIN32_LEAN_AND_MEAN keeps windows.h from pulling in the old winsock.h, which clashes with winsock2.h
+    target_compile_definitions(imchat_reactor PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(imchat_reactor PUBLIC ws2_32)
+endif()
+
+# ---- server ----
+add_library(imchat_server STATIC src/server/ChatServer.cpp src/server/ChatServer.h)
+target_include_directories(imchat_server PUBLIC src/server)
+target_link_libraries(imchat_server PUBLIC imchat_reactor imchat_protocol imchat_core)
+add_executable(IMChatServer src/server/main.cpp)
+target_link_libraries(IMChatServer PRIVATE imchat_server)
+
 # ---- tests ----
 enable_testing()
 add_executable(IMChatTests tests/TestMain.cpp)
 target_link_libraries(IMChatTests PRIVATE imchat_core)
 add_test(NAME IMChatTests COMMAND IMChatTests WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+option(IMCHAT_BUILD_UNIT_TESTS "Build the GoogleTest unit tests (downloads GoogleTest)" ON)
+if(IMCHAT_BUILD_UNIT_TESTS)
+    include(FetchContent)
+    FetchContent_Declare(googletest
+        URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+        URL_HASH SHA256=1f357c27ca988c3f7c6b4bf68a9395005ac6761f034046e9dde0896e3aba00e4
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)   # match the default /MD runtime
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
+    file(GLOB UNIT_TEST_SOURCES CONFIGURE_DEPENDS tests/unit/*.cpp tests/unit/*.h)
+    add_executable(IMChatUnitTests ${UNIT_TEST_SOURCES})
+    target_link_libraries(IMChatUnitTests PRIVATE imchat_server GTest::gtest_main)
+    target_compile_definitions(IMChatUnitTests PRIVATE IMCHAT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    include(GoogleTest)
+    gtest_discover_tests(IMChatUnitTests WORKING_DIRECTORY ${CMAKE_BINARY_DIR} DISCOVERY_MODE PRE_TEST)
+endif()
 
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT IMChatClient)

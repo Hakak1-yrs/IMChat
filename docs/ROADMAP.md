@@ -11,9 +11,22 @@
 
 ## 阶段 1：服务端（核心）
 
-现状：客户端直接读写共享的 `messages.txt`，只能在一台电脑上运行。
+已完成：
 
-计划：
+- [x] 协议：帧编解码（半包、粘包、长度上限）、JSON 消息，见 [PROTOCOL.md](PROTOCOL.md)
+- [x] 网络库：`Poller` 接口 + 基于 poll / WSAPoll 的实现、`EventLoop`（定时器、跨线程任务与唤醒）、`TcpServer`、`TcpConnection`（非阻塞收发、输出缓冲区、积压上限）
+- [x] `IMChatServer`：登录、私信的确认与在线推送、单点登录（挤下线）、心跳超时、按 `clientMsgId` 去重
+- [x] GoogleTest 单元测试和集成测试（30 个用例，乱序重复运行 900 次无失败）
+
+下一步：
+
+- [ ] 群消息、历史消息同步（上线后拉取离线期间的消息）、已读回执
+- [ ] 图形客户端改为通过网络连接服务端（后台网络线程 + 断线重连）
+- [ ] `EpollPoller`（需要 Linux 环境：WSL 或 CI）
+- [ ] 业务处理移到工作线程池，I/O 线程只负责收发
+- [ ] 让业务核心不再依赖 Windows API（SHA-256、文件操作），服务端可以在 Linux 上编译运行
+
+原计划：
 
 - **独立的 `IMChatServer`**，可以跨平台运行：Linux 上用 epoll，Windows 上用 WSAPoll，两者封装在同一个 `Poller` 接口下。
 - **Reactor 线程模型**：一个 I/O 线程负责收发和分帧，业务逻辑交给工作线程池，结果再投递回 I/O 线程发送。
