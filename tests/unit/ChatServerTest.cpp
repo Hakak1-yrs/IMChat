@@ -896,3 +896,38 @@ TEST_F(ChatServerTest, PasswordLoginListsOtherServicesAndTokenLogsThemIn) {
     again.send(MessageType::LOGIN_REQ, { { "service", "WEIBO" }, { "account", "10001" }, { "token", token } });
     EXPECT_EQ(again.receive()->body["ok"], true);
 }
+
+// ======================== 速率限制与运行统计 ========================
+
+TEST_F(ChatServerTest, TokenBucketRejectsFloodingButAllowsBursts) {
+    ChatServer::Options options;
+    options.messageRate = 5;    // 每秒 5 条
+    options.messageBurst = 3;   // 最多连发 3 条
+    startServer(options);
+    TestClient zhang(port_), li(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    int ok = 0, limited = 0;
+    for (int i = 0; i < 6; ++i) {
+        zhang.send(MessageType::SEND_MSG_REQ, sendRequest("flood-" + std::to_string(i), "10002", "刷屏 " + std::to_string(i)));
+        const json ack = zhang.receive()->body;
+        if (ack["ok"] == true) ++ok;
+        else {
+            ++limited;
+            EXPECT_EQ(ack["retryable"], true);
+        }
+    }
+    EXPECT_EQ(ok, 3);        // 桶里一开始有 3 个令牌
+    EXPECT_EQ(limited, 3);
+    std::this_thread::sleep_for(450ms);   // 补充了约 2 个令牌：被拒的消息可以用原来的编号重发
+    zhang.send(MessageType::SEND_MSG_REQ, sendRequest("flood-3", "10002", "刷屏 3"));
+    EXPECT_EQ(zhang.receive()->body["ok"], true);
+
+    pushes.clear();
+    const json stats = call(zhang, "server.stats")["data"];
+    EXPECT_EQ(stats["messages"], 4);
+    EXPECT_EQ(stats["rateLimited"], 3);
+    EXPECT_EQ(stats["online"], 2);
+    EXPECT_EQ(stats["logins"], 2);
+    EXPECT_GE(stats["pushes"], 4);
+}

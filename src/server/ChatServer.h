@@ -36,6 +36,9 @@ public:
         // 另开的 I/O 线程数。为 0 时接受连接、收发和业务处理都在一个线程里；
         // 大于 0 时收发、切帧、解析 JSON 在 I/O 线程里做，业务处理仍在一个线程里（Platform 不需要加锁）
         int ioThreads = 0;
+        // 每条连接发消息的速率上限（令牌桶）：每秒 messageRate 条，允许短时间突发 messageBurst 条；0 表示不限制
+        double messageRate = 0;
+        int messageBurst = 0;
     };
 
     ChatServer(EventLoop& loop, Platform& platform, Options options);
@@ -53,6 +56,16 @@ private:
         TcpConnection::Ptr connection;
         bool loggedIn = false;
         std::string accountKey;   // "QQ 10001"
+        double tokens = 0;        // 令牌桶里剩下的令牌
+        std::chrono::steady_clock::time_point bucketTime{};   // 上次补充令牌的时间（初始值表示还没用过）
+    };
+    // 运行统计（server.stats 查询，每分钟打印一行概况）
+    struct Stats {
+        long long logins = 0;
+        long long messages = 0;      // 保存成功的消息
+        long long pushes = 0;        // 推送出去的消息
+        long long calls = 0;         // 通用请求
+        long long rateLimited = 0;   // 因发送过快被拒绝的消息
     };
     // 最近处理过的客户端消息编号 → 当时的回执。客户端没收到回执而重发同一条消息时，直接返回原回执，不会重复保存
     struct RecentMessages {
@@ -109,6 +122,9 @@ private:
 
     nlohmann::json messageJson(const Message& message) const;   // 推送和同步共用的消息格式
     std::optional<Message> latestFrom(const ServiceBase& me) const;   // me 刚保存的那条消息
+    bool takeToken(Session& session);   // 速率限制：还能发就扣一个令牌并返回 true
+    nlohmann::json statsJson() const;
+    void logStats();
     void notifyPresence(const std::string& accountKey, bool online);   // 通知在线的好友：我上线 / 下线了
     bool isOnline(const std::string& accountKey) const;
     ServiceBase* accountOf(const Session& session) const;
@@ -130,6 +146,10 @@ private:
     TcpServer server_;
     LoginToken tokens_;
     EventLoop::TimerId idleTimer_ = 0;
+    EventLoop::TimerId statsTimer_ = 0;
+    Stats stats_;
+    long long lastLoggedMessages_ = 0;
+    std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     std::unordered_map<std::uint64_t, Session> sessions_;              // 连接编号 → 会话
     std::unordered_map<std::string, std::uint64_t> online_;            // "QQ 10001" → 连接编号
     std::unordered_map<std::string, RecentMessages> recent_;           // "QQ 10001" → 最近的消息回执

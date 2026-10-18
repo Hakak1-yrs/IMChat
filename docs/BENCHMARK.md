@@ -11,7 +11,7 @@
 
 ```powershell
 build\bin\Release\IMChatBench.exe prepare bench_data 200    # 用业务接口注册 200 个账号，两两互为好友，前 100 人建一个群
-build\bin\Release\IMChatServer.exe --port 9600 --data bench_data
+build\bin\Release\IMChatServer.exe --port 9600 --data bench_data --rate-limit 0   # 压测时关掉每条连接的速率限制
 build\bin\Release\IMChatBench.exe run --data bench_data --port 9600 --clients 200 --messages 250
 build\bin\Release\IMChatBench.exe run --data bench_data --port 9600 --clients 100 --messages 20 --group
 ```

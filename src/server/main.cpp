@@ -1,4 +1,4 @@
-// IMChat 服务端。用法：IMChatServer [--port 9000] [--data 数据目录] [--io-threads N] [--idle-timeout 秒] [--verbose]
+// IMChat 服务端。用法：IMChatServer [--port 9000] [--data 数据目录] [--io-threads N] [--rate-limit N] [--idle-timeout 秒] [--verbose]
 #include "ChatServer.h"   // 网络头文件（winsock2.h）必须在其他 Windows 头文件之前
 #include <csignal>
 #include <filesystem>
@@ -62,7 +62,7 @@ std::string loadTokenSecret(const std::string& dataDir) {
 }
 
 void printUsage() {
-    std::cout << "用法：IMChatServer [--port 端口，默认 9000] [--data 数据目录] [--io-threads I/O 线程数，默认 2，0 表示单线程] [--idle-timeout 秒，默认 90] [--verbose]\n";
+    std::cout << "用法：IMChatServer [--port 端口，默认 9000] [--data 数据目录] [--io-threads I/O 线程数，默认 2，0 表示单线程] [--rate-limit 每条连接每秒最多发几条，默认 20，0 表示不限] [--idle-timeout 秒，默认 90] [--verbose]\n";
 }
 
 }  // namespace
@@ -73,6 +73,8 @@ int main(int argc, char** argv) {
 #endif
     ChatServer::Options options;
     options.ioThreads = 2;   // 压测中 2 个 I/O 线程时私信吞吐最高，再多没有收益（见 docs/BENCHMARK.md）
+    options.messageRate = 20;   // 正常聊天远远用不到；突发 50 条足够断线重连后补发积压的消息
+    options.messageBurst = 50;
     std::string dataDir;
     const std::vector<std::string> args = arguments(argc, argv);
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -81,6 +83,7 @@ int main(int argc, char** argv) {
             if (args[i] == "--port" && hasValue) options.port = static_cast<std::uint16_t>(std::stoi(args[++i]));
             else if (args[i] == "--data" && hasValue) dataDir = args[++i];
             else if (args[i] == "--io-threads" && hasValue) options.ioThreads = std::stoi(args[++i]);
+            else if (args[i] == "--rate-limit" && hasValue) options.messageRate = std::stod(args[++i]);
             else if (args[i] == "--idle-timeout" && hasValue) options.idleTimeout = std::chrono::seconds(std::stoi(args[++i]));
             else if (args[i] == "--verbose") Log::setLevel(Log::Level::DEBUG);
             else {

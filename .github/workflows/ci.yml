@@ -27,7 +27,7 @@ jobs:
         run: |
           New-Item -ItemType Directory bench_data | Out-Null
           build\bin\Release\IMChatBench.exe prepare bench_data 200
-          $server = Start-Process build\bin\Release\IMChatServer.exe -ArgumentList "--port","9600","--data","bench_data" -PassThru -WindowStyle Hidden
+          $server = Start-Process build\bin\Release\IMChatServer.exe -ArgumentList "--port","9600","--data","bench_data","--rate-limit","0" -PassThru -WindowStyle Hidden
           Start-Sleep -Seconds 1
           build\bin\Release\IMChatBench.exe run --data bench_data --port 9600 --clients 100 --messages 50
           $privateExit = $LASTEXITCODE

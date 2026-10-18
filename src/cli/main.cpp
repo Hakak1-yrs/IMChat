@@ -87,6 +87,7 @@ void printHelp() {
           "  直接输入内容             发给上一次 /to 或 /g 的对象\n"
           "  /read                    把当前会话标记为已读（对方会收到已读回执）\n"
           "  /status                  连接状态、待确认的消息数\n"
+          "  /stats                   服务端运行统计（连接数、消息数、被限流的消息数……）\n"
           "  /quit                    退出");
 }
 
@@ -201,6 +202,18 @@ int main(int argc, char** argv) {
         } else if (command == "/status") {
             print(std::string("* ") + stateName(client.state()) + "，待确认的消息 " + std::to_string(client.pendingCount()) +
                   " 条，最新消息 #" + std::to_string(client.lastSeq()));
+        } else if (command == "/stats") {
+            client.call("server.stats", json::object(), [](bool ok, const json& s, const std::string& error) {
+                if (!ok) {
+                    print("* 查询失败：" + error);
+                    return;
+                }
+                print("* 服务端：已运行 " + std::to_string(s.value("uptimeSeconds", 0LL)) + " 秒，I/O 线程 " +
+                      std::to_string(s.value("ioThreads", 0)) + " 个，连接 " + std::to_string(s.value("connections", 0)) + "，在线 " +
+                      std::to_string(s.value("online", 0)) + "；累计登录 " + std::to_string(s.value("logins", 0LL)) + " 次，消息 " +
+                      std::to_string(s.value("messages", 0LL)) + " 条，推送 " + std::to_string(s.value("pushes", 0LL)) + " 条，因发送过快被拒 " +
+                      std::to_string(s.value("rateLimited", 0LL)) + " 条");
+            });
         } else if (command[0] == '/') {
             print("* 未知命令，输入 /help 查看命令");
         } else {

@@ -87,6 +87,7 @@
 | `group.create` | `{name}` | `{groupNo, message}` |
 | `group.exec` | `{kind, groupNo, target, text, on, members}` | `{message}`：群管理命令，`kind` 见下表 |
 
+| `server.stats` | — | `{uptimeSeconds, ioThreads, connections, online, logins, messages, pushes, calls, rateLimited}`：服务端运行统计（命令行客户端的 `/stats`） |
 | `moments.list` | `{author?}` | `{moments: [{seq, author, scope, time, text, likes, comments: [{seq, author, replyTo, time, text}]}], names: {账号: 昵称}}`：我能看到的动态，最新的在前 |
 | `moments.notices` | — | `{all: [文字…], unread: [文字…]}`：别人给我的点赞、评论、回复 |
 | `moments.markRead` | — | `{}` |
@@ -160,6 +161,7 @@
 - **心跳**：客户端应定期发送 `PING`。服务端在 `--idle-timeout` 秒内（默认 90 秒）没有收到任何数据，就关闭这条连接。
 - **单点登录**：同一账号只能有一个在线连接。新连接登录成功后，服务端给旧连接发 `KICKED`，再关闭旧连接。
 - **慢速客户端**：如果某条连接待发送的数据超过 8 MiB（对方长时间不读），服务端直接断开它，防止内存被占满。
+- **速率限制**：每条连接发消息的速率由令牌桶限制（默认每秒 20 条，允许突发 50 条，`--rate-limit` 调整，0 表示不限）。超出时这条消息不保存、不推送，回执为 `{ok: false, error, retryable: true}`，客户端可以稍后用同一个 `clientMsgId` 重发。突发额度足够断线重连后补发积压的消息。
 
 ## 消息可靠性
 

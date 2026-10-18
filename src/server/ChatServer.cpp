@@ -92,6 +92,7 @@ ChatServer::ChatServer(EventLoop& loop, Platform& platform, Options options)
 
 ChatServer::~ChatServer() {
     if (idleTimer_ != 0) loop_.cancel(idleTimer_);
+    if (statsTimer_ != 0) loop_.cancel(statsTimer_);
     server_.stop();   // 先停掉 I/O 线程：它们的回调会访问下面这些成员，必须在成员销毁之前停
 }
 
@@ -102,6 +103,7 @@ bool ChatServer::start(std::string& error) {
     server_.setThreadCount(options_.ioThreads);
     if (!server_.listen(options_.ip, options_.port, error)) return false;
     idleTimer_ = loop_.runEvery(options_.idleCheckInterval, [this] { closeIdleConnections(); });
+    statsTimer_ = loop_.runEvery(std::chrono::minutes(1), [this] { logStats(); });
     Log::info("IMChatServer 正在监听 " + options_.ip + ":" + std::to_string(server_.port()) +
               (options_.ioThreads > 0 ? "，I/O 线程 " + std::to_string(options_.ioThreads) + " 个" : ""));
     return true;
@@ -261,6 +263,7 @@ void ChatServer::handleLogin(Session& session, const json& request) {
     }
     response["services"] = std::move(services);
     send(session.connection, MessageType::LOGIN_RESP, response);
+    ++stats_.logins;
     Log::info(key + " 从 " + session.connection->peer() + " 登录");
     if (previousId == 0) notifyPresence(key, true);   // 换一处登录不算“上线”
 
@@ -287,6 +290,13 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
     auto seen = recent.acks.find(clientMsgId);
     if (seen != recent.acks.end()) {   // 重发的消息：返回第一次的回执，不再保存一遍
         json ack = seen->second;
+        ack.update(reply(request));
+        send(session.connection, MessageType::SEND_MSG_ACK, ack);
+        return;
+    }
+    if (!takeToken(session)) {   // 发得太快（刷屏或客户端出错）：拒绝这一条，不保存、不推送；客户端可以稍后用同一个编号重发
+        ++stats_.rateLimited;
+        json ack = { { "clientMsgId", clientMsgId }, { "ok", false }, { "error", "发送太频繁，请稍后再试" }, { "retryable", true } };
         ack.update(reply(request));
         send(session.connection, MessageType::SEND_MSG_ACK, ack);
         return;
@@ -320,6 +330,7 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
         send(session.connection, MessageType::SEND_MSG_ACK, ack);
         return;
     }
+    ++stats_.messages;
     ack["ok"] = true;
     ack["seq"] = saved->seq();
     ack["time"] = saved->time();
@@ -339,6 +350,44 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
     push.body = messageJson(*saved);
     const std::string bytes = push.encode();
     for (const std::string& receiver : receivers) pushBytesTo(service + " " + receiver, bytes);
+}
+
+bool ChatServer::takeToken(Session& session) {
+    // 令牌桶：桶里最多 messageBurst 个令牌，每秒补充 messageRate 个，每发一条消息用掉一个。
+    // 允许短时间的突发（比如断线重连后补发积压的消息），但长期速率不能超过 messageRate
+    if (options_.messageRate <= 0) return true;
+    const auto now = std::chrono::steady_clock::now();
+    const double burst = options_.messageBurst > 0 ? options_.messageBurst : options_.messageRate;
+    if (session.bucketTime == std::chrono::steady_clock::time_point{}) session.tokens = burst;
+    else session.tokens += std::chrono::duration<double>(now - session.bucketTime).count() * options_.messageRate;
+    session.tokens = (std::min)(session.tokens, burst);
+    session.bucketTime = now;
+    if (session.tokens < 1.0) return false;
+    session.tokens -= 1.0;
+    return true;
+}
+
+json ChatServer::statsJson() const {
+    const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - startTime_).count();
+    return json{ { "uptimeSeconds", uptime },
+                 { "ioThreads", options_.ioThreads },
+                 { "connections", sessions_.size() },
+                 { "online", online_.size() },
+                 { "logins", stats_.logins },
+                 { "messages", stats_.messages },
+                 { "pushes", stats_.pushes },
+                 { "calls", stats_.calls },
+                 { "rateLimited", stats_.rateLimited } };
+}
+
+void ChatServer::logStats() {
+    // 每分钟一行运行概况（这一分钟没有新消息时不打印）
+    const long long messages = stats_.messages - lastLoggedMessages_;
+    lastLoggedMessages_ = stats_.messages;
+    if (messages == 0) return;
+    Log::info("运行概况：连接 " + std::to_string(sessions_.size()) + "，在线 " + std::to_string(online_.size()) + "，近一分钟消息 " +
+              std::to_string(messages) + " 条，累计推送 " + std::to_string(stats_.pushes) + " 条，因发送过快被拒 " +
+              std::to_string(stats_.rateLimited) + " 条");
 }
 
 std::optional<Message> ChatServer::latestFrom(const ServiceBase& me) const {
@@ -400,14 +449,18 @@ void ChatServer::pushTo(const std::string& accountKey, MessageType type, const j
     auto online = online_.find(accountKey);
     if (online == online_.end()) return;
     auto receiver = sessions_.find(online->second);
-    if (receiver != sessions_.end()) send(receiver->second.connection, type, body);
+    if (receiver == sessions_.end()) return;
+    if (type == MessageType::MSG_PUSH) ++stats_.pushes;
+    send(receiver->second.connection, type, body);
 }
 
 void ChatServer::pushBytesTo(const std::string& accountKey, const std::string& bytes) {
     auto online = online_.find(accountKey);
     if (online == online_.end()) return;
     auto receiver = sessions_.find(online->second);
-    if (receiver != sessions_.end()) deliver(receiver->second.connection, bytes);
+    if (receiver == sessions_.end()) return;
+    ++stats_.pushes;
+    deliver(receiver->second.connection, bytes);
 }
 
 // ======================== 通用请求（CALL_REQ） ========================
@@ -431,6 +484,7 @@ void ChatServer::registerApi() {
     };
     api_["group.create"] = [this](Session&, ServiceBase& me, const json& args) { return createGroup(me, args); };
     api_["group.exec"] = [this](Session&, ServiceBase& me, const json& args) { return execGroup(me, args); };
+    api_["server.stats"] = [this](Session&, ServiceBase&, const json&) { return statsJson(); };
     api_["moments.list"] = [this](Session&, ServiceBase& me, const json& args) { return momentsList(me, args); };
     api_["moments.notices"] = [this](Session&, ServiceBase& me, const json&) {
         return json{ { "all", platform_.momentNotices(me, false) }, { "unread", platform_.momentNotices(me, true) } };
@@ -692,6 +746,7 @@ void ChatServer::persist() {
 }
 
 void ChatServer::handleCall(Session& session, const json& request) {
+    ++stats_.calls;
     json response = reply(request);
     const std::string op = field(request, "op");
     auto handler = api_.find(op);
