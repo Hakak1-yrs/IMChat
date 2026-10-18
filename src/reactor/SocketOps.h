@@ -27,6 +27,10 @@ public:
     static SocketHandle listenTcp(const std::string& ip, std::uint16_t port, int backlog, std::uint16_t& boundPort,
                                   std::string& error);
     static SocketHandle connectTcp(const std::string& ip, std::uint16_t port);   // 阻塞方式连接（测试和工具使用）
+    // 非阻塞方式发起连接：立即返回，inProgress 为 true 表示正在连接，之后套接字可写时用 socketError 检查结果。
+    // 地址无效或立即失败时返回 kInvalidSocket
+    static SocketHandle startConnect(const std::string& ip, std::uint16_t port, bool& inProgress);
+    static int socketError(SocketHandle s);   // SO_ERROR：非阻塞连接的结果，0 表示成功
     // 一对互相连通的套接字：事件循环用它唤醒阻塞在 poll 上的线程。
     // POSIX 用 socketpair；Windows 没有，就在 127.0.0.1 上临时监听、自己连自己
     static bool createPair(SocketHandle& a, SocketHandle& b);

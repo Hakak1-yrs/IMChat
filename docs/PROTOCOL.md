@@ -35,10 +35,26 @@
 | `LOGIN_REQ` | 100 | C → S | `{reqId, service: "QQ"\|"WECHAT"\|"WEIBO"\|"WEISHANG", account, password}` |
 | `LOGIN_RESP` | 101 | S → C | 成功：`{reqId, ok: true, nickname, unreadPrivate, unreadGroup}`；失败：`{reqId, ok: false, error}` |
 | `KICKED` | 102 | S → C | `{reason}`。同一账号在别处登录，发完这条通知后服务端关闭连接 |
-| `SEND_MSG_REQ` | 200 | C → S | `{reqId, clientMsgId, to, text}` |
+| `SEND_MSG_REQ` | 200 | C → S | 私信：`{reqId, clientMsgId, to, text}`；群消息：`{reqId, clientMsgId, groupNo, text}` |
 | `SEND_MSG_ACK` | 201 | S → C | 成功：`{reqId, clientMsgId, ok: true, seq, time}`；失败：`{reqId, clientMsgId, ok: false, error}` |
-| `MSG_PUSH` | 202 | S → C | `{seq, service, from, to, text, time}` |
+| `MSG_PUSH` | 202 | S → C | 一条消息（格式见下）。私信推给对方，群消息推给除发送者外所有在线的群成员 |
+| `SYNC_REQ` | 300 | C → S | `{reqId, afterSeq, limit?}`：取序号大于 `afterSeq` 的、与我有关的消息（我收发的私信 + 我所在的群的消息） |
+| `SYNC_RESP` | 301 | S → C | `{reqId, messages: [消息…], hasMore}`：按序号递增；`limit` 默认 200，最多 500 |
+| `READ_REQ` | 400 | C → S | `{reqId, peer, seq}` 或 `{reqId, groupNo, seq}`：这个会话已读到 `seq` |
+| `READ_RESP` | 401 | S → C | `{reqId, ok}` |
+| `READ_RECEIPT` | 402 | S → C | `{reader, seq}`：私信的对方已读到 `seq`（群消息不发回执） |
 | `ERROR_RESP` | 900 | S → C | `{reqId?, code, message}` |
+
+### 消息格式（`MSG_PUSH` 和 `SYNC_RESP.messages` 中的每一项）
+
+```json
+{"seq": 12, "service": "QQ", "from": "10001", "to": "10002", "text": "你好", "time": "2026-10-17 22:41:05"}
+{"seq": 13, "service": "QQ", "from": "10001", "groupNo": 1001, "text": "群里说一句", "time": "2026-10-17 22:41:09"}
+```
+
+- 私信带 `to`，群消息带 `groupNo`。
+- 群系统提示（如"A 邀请 B 加入了群聊"）带 `"system": true`。
+- 撤回的消息带 `"revoked": true` 和 `revokedBy`，`text` 为空，不再下发原文。
 
 ### 错误码（`ERROR_RESP.code`）
 
@@ -59,9 +75,23 @@
 
 ## 消息可靠性
 
-- **去重**：每条消息由客户端生成唯一的 `clientMsgId`。没有收到 `SEND_MSG_ACK` 时，用**同一个** `clientMsgId` 重发。服务端会记住每个账号最近 256 条消息的回执；遇到重复的 `clientMsgId`，直接返回第一次的回执，不会再保存一遍，也不会再推送给对方。
-- **序号**：`seq` 是消息在服务端全局递增的序号，可以用来排序、对账。
-- **离线消息**：对方不在线时，消息照常保存，对方上线后能在历史消息中看到。
+服务端：
+
+- **去重**：每条消息由客户端生成唯一的 `clientMsgId`。服务端会记住每个账号最近 256 条消息的回执；遇到重复的 `clientMsgId`，直接返回第一次的回执，不会再保存一遍，也不会再推送给对方。
+- **序号**：`seq` 是消息在服务端全局递增的序号，可以用来排序，也可以作为同步的位置。
+- **离线消息**：对方不在线时，消息照常保存，对方上线后用 `SYNC_REQ` 取到。
+
+客户端（`src/client/ChatClient` 的做法）：
+
+1. 要发的消息先进入**待确认队列**，收到 `SEND_MSG_ACK` 才移除。
+2. 断线后自动重连，重连间隔按指数退避（0.5 秒起，最长 30 秒），然后用记住的账号重新登录。
+3. 登录成功后先 `SYNC_REQ{afterSeq: 本地最大序号}`；`hasMore` 为 true 时，从这一批最后一条的序号继续要，直到取完。
+4. 同步完成后，把待确认队列里的消息**按原顺序、用原来的 `clientMsgId`** 重发。
+5. 推送和同步可能重叠（比如登录后同步期间又来了新消息），客户端按 `seq` 去重，每条消息只交给界面一次。
+6. 心跳：每 15 秒发一次 `PING`；如果 45 秒内没有收到服务端的任何数据，就认为连接已经失效（比如网络被切断），主动断开并重连。
+7. 收到 `KICKED` 后不再自动重连，避免两个客户端互相挤下线。
+
+这样，服务端宕机、网络中断期间发出的消息，都会在恢复后送达，并且只送达一次。
 
 ## 示例
 

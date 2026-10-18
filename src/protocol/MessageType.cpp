@@ -10,6 +10,11 @@ const char* messageTypeName(MessageType type) {
     case MessageType::SEND_MSG_REQ: return "SEND_MSG_REQ";
     case MessageType::SEND_MSG_ACK: return "SEND_MSG_ACK";
     case MessageType::MSG_PUSH: return "MSG_PUSH";
+    case MessageType::SYNC_REQ: return "SYNC_REQ";
+    case MessageType::SYNC_RESP: return "SYNC_RESP";
+    case MessageType::READ_REQ: return "READ_REQ";
+    case MessageType::READ_RESP: return "READ_RESP";
+    case MessageType::READ_RECEIPT: return "READ_RECEIPT";
     case MessageType::ERROR_RESP: return "ERROR_RESP";
     }
     return "UNKNOWN";

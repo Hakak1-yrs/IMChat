@@ -112,6 +112,39 @@ SocketHandle SocketOps::connectTcp(const std::string& ip, std::uint16_t port) {
     return s;
 }
 
+SocketHandle SocketOps::startConnect(const std::string& ip, std::uint16_t port, bool& inProgress) {
+    startup();
+    inProgress = false;
+    sockaddr_in address;
+    if (!fillAddress(ip, port, address)) return kInvalidSocket;
+    SocketHandle s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == kInvalidSocket) return kInvalidSocket;
+    if (!setNonBlocking(s)) {
+        close(s);
+        return kInvalidSocket;
+    }
+    setNoDelay(s);
+    if (connect(s, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) return s;   // 本机连接可能立即成功
+    const int error = lastError();
+#ifdef _WIN32
+    inProgress = error == WSAEWOULDBLOCK;
+#else
+    inProgress = error == EINPROGRESS;
+#endif
+    if (!inProgress) {
+        close(s);
+        return kInvalidSocket;
+    }
+    return s;
+}
+
+int SocketOps::socketError(SocketHandle s) {
+    int error = 0;
+    SockLen length = sizeof(error);
+    if (getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length) != 0) return lastError();
+    return error;
+}
+
 bool SocketOps::createPair(SocketHandle& a, SocketHandle& b) {
     startup();
 #ifdef _WIN32

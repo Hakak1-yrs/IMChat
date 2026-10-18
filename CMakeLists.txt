@@ -69,6 +69,13 @@ target_link_libraries(imchat_server PUBLIC imchat_reactor imchat_protocol imchat
 add_executable(IMChatServer src/server/main.cpp)
 target_link_libraries(IMChatServer PRIVATE imchat_server)
 
+# ---- network client library and the command-line client ----
+add_library(imchat_client STATIC src/client/ChatClient.cpp src/client/ChatClient.h)
+target_include_directories(imchat_client PUBLIC src/client)
+target_link_libraries(imchat_client PUBLIC imchat_reactor imchat_protocol)
+add_executable(IMChatCli src/cli/main.cpp)
+target_link_libraries(IMChatCli PRIVATE imchat_client)
+
 # ---- tests ----
 enable_testing()
 add_executable(IMChatTests tests/TestMain.cpp)
@@ -88,7 +95,7 @@ if(IMCHAT_BUILD_UNIT_TESTS)
 
     file(GLOB UNIT_TEST_SOURCES CONFIGURE_DEPENDS tests/unit/*.cpp tests/unit/*.h)
     add_executable(IMChatUnitTests ${UNIT_TEST_SOURCES})
-    target_link_libraries(IMChatUnitTests PRIVATE imchat_server GTest::gtest_main)
+    target_link_libraries(IMChatUnitTests PRIVATE imchat_server imchat_client GTest::gtest_main)
     target_compile_definitions(IMChatUnitTests PRIVATE IMCHAT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     include(GoogleTest)
     gtest_discover_tests(IMChatUnitTests WORKING_DIRECTORY ${CMAKE_BINARY_DIR} DISCOVERY_MODE PRE_TEST)

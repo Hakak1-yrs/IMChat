@@ -1,38 +1,14 @@
 #include <gtest/gtest.h>
-#include <filesystem>
-#include <fstream>
 #include <memory>
-#include <sstream>
 #include <thread>
-#include "ChatServer.h"
 #include "Log.h"
-#include "LoopThread.h"
-#include "Platform.h"
 #include "TestClient.h"
+#include "TestServer.h"
 
-namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 using nlohmann::json;
 
 namespace {
-
-// 每个测试一份全新的演示数据，放在系统临时目录下（用户名含中文时，路径也含中文）
-std::string freshDataDir(const std::string& name) {
-    const fs::path dir = fs::temp_directory_path() / "imchat_unit_tests" / name;
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir);
-    for (const auto& entry : fs::directory_iterator(fs::u8path(IMCHAT_SOURCE_DIR) / "data_demo"))
-        fs::copy_file(entry.path(), dir / entry.path().filename());
-    return dir.u8string() + "/";
-}
-
-std::string readText(const std::string& utf8Path) {
-    std::ifstream in(fs::u8path(utf8Path), std::ios::binary);
-    std::ostringstream buffer;
-    buffer << in.rdbuf();
-    return buffer.str();
-}
 
 std::size_t occurrences(const std::string& text, const std::string& part) {
     std::size_t count = 0;
@@ -44,40 +20,33 @@ json sendRequest(const std::string& clientMsgId, const std::string& to, const st
     return { { "reqId", reqId }, { "clientMsgId", clientMsgId }, { "to", to }, { "text", text } };
 }
 
+json groupRequest(const std::string& clientMsgId, int groupNo, const std::string& text) {
+    return { { "reqId", 2 }, { "clientMsgId", clientMsgId }, { "groupNo", groupNo }, { "text", text } };
+}
+
+std::string readText(const std::string& utf8Path) { return TestServer::readText(utf8Path); }
+
 }  // namespace
 
 class ChatServerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         Log::setLevel(Log::Level::WARN);
-        dataDir_ = freshDataDir(::testing::UnitTest::GetInstance()->current_test_info()->name());
+        dataDir_ = TestServer::freshDataDir(::testing::UnitTest::GetInstance()->current_test_info()->name());
     }
 
-    void TearDown() override { thread_.reset(); }
+    void TearDown() override { server_.reset(); }
 
     void startServer(ChatServer::Options options = {}) {
-        options.ip = "127.0.0.1";
         options.port = 0;
-        thread_ = std::make_unique<LoopThread>(
-            [this, options](EventLoop& loop) {
-                platform_ = std::make_unique<Platform>(dataDir_);
-                server_ = std::make_unique<ChatServer>(loop, *platform_, options);
-                std::string error;
-                if (!server_->start(error)) throw std::runtime_error(error);
-                port_ = server_->port();
-            },
-            [this] {
-                server_.reset();
-                platform_.reset();
-            });
+        server_ = std::make_unique<TestServer>(dataDir_, options);
+        port_ = server_->port();
     }
 
-    std::size_t onlineCount() { return thread_->call([this] { return server_->onlineCount(); }); }
+    std::size_t onlineCount() { return server_->onlineCount(); }
 
     std::string dataDir_;
-    std::unique_ptr<Platform> platform_;
-    std::unique_ptr<ChatServer> server_;
-    std::unique_ptr<LoopThread> thread_;
+    std::unique_ptr<TestServer> server_;
     std::uint16_t port_ = 0;
 };
 
@@ -256,4 +225,151 @@ TEST_F(ChatServerTest, UnknownMessageTypeIsReported) {
     ASSERT_TRUE(error);
     EXPECT_EQ(error->body["code"], static_cast<int>(ErrorCode::UNKNOWN_TYPE));
     EXPECT_EQ(error->body["reqId"], 3);
+}
+
+TEST_F(ChatServerTest, GroupMessageIsPushedToOnlineMembersOnly) {
+    // QQ 群 1001：成员 10001、10002、10003、10004；10005 只是入群申请人
+    startServer();
+    TestClient zhang(port_), li(port_), wang(port_), sun(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    ASSERT_EQ(wang.login("QQ", "10003")["ok"], true);
+    ASSERT_EQ(sun.login("QQ", "10005")["ok"], true);
+
+    zhang.send(MessageType::SEND_MSG_REQ, groupRequest("g1", 1001, "今晚八点群里对一下进度"));
+    std::optional<Packet> ack = zhang.receive();
+    ASSERT_TRUE(ack);
+    ASSERT_EQ(ack->body["ok"], true);
+    for (TestClient* member : { &li, &wang }) {
+        std::optional<Packet> push = member->receive();
+        ASSERT_TRUE(push);
+        EXPECT_EQ(push->type, MessageType::MSG_PUSH);
+        EXPECT_EQ(push->body["groupNo"], 1001);
+        EXPECT_EQ(push->body["from"], "10001");
+        EXPECT_EQ(push->body["text"], "今晚八点群里对一下进度");
+        EXPECT_EQ(push->body["seq"], ack->body["seq"]);
+        EXPECT_FALSE(push->body.contains("to"));
+    }
+    EXPECT_FALSE(sun.receive(300));     // 不是成员，收不到
+    EXPECT_FALSE(zhang.receive(100));   // 发送者自己不会再收到一遍
+
+    sun.send(MessageType::SEND_MSG_REQ, groupRequest("g2", 1001, "我能发吗"));
+    std::optional<Packet> rejected = sun.receive();
+    ASSERT_TRUE(rejected);
+    EXPECT_EQ(rejected->body["ok"], false);
+}
+
+TEST_F(ChatServerTest, SendRequiresExactlyOneTarget) {
+    startServer();
+    TestClient zhang(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    zhang.send(MessageType::SEND_MSG_REQ, { { "clientMsgId", "x" }, { "to", "10002" }, { "groupNo", 1001 }, { "text", "?" } });
+    std::optional<Packet> error = zhang.receive();
+    ASSERT_TRUE(error);
+    EXPECT_EQ(error->type, MessageType::ERROR_RESP);
+    EXPECT_EQ(error->body["code"], static_cast<int>(ErrorCode::BAD_REQUEST));
+}
+
+TEST_F(ChatServerTest, SyncReturnsMessagesAfterGivenSeq) {
+    startServer();
+    std::vector<int> sent;
+    {
+        TestClient zhang(port_);   // 李四不在线时，张三发了三条
+        ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+        for (int i = 1; i <= 3; ++i) {
+            zhang.send(MessageType::SEND_MSG_REQ, sendRequest("off-" + std::to_string(i), "10002", "离线消息 " + std::to_string(i)));
+            std::optional<Packet> ack = zhang.receive();
+            ASSERT_TRUE(ack);
+            sent.push_back(ack->body["seq"].get<int>());
+        }
+    }
+    TestClient li(port_);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    li.send(MessageType::SYNC_REQ, { { "reqId", 3 }, { "afterSeq", 0 } });
+    std::optional<Packet> all = li.receive();
+    ASSERT_TRUE(all);
+    ASSERT_EQ(all->type, MessageType::SYNC_RESP);
+    EXPECT_EQ(all->body["reqId"], 3);
+    EXPECT_EQ(all->body["hasMore"], false);
+    const json& messages = all->body["messages"];
+    ASSERT_GE(messages.size(), 3u);   // 演示数据里原有的消息 + 刚才的三条
+    int previous = 0;
+    for (const json& m : messages) {   // 按序号递增
+        EXPECT_GT(m["seq"].get<int>(), previous);
+        previous = m["seq"].get<int>();
+    }
+    EXPECT_EQ(messages.back()["seq"], sent.back());
+    EXPECT_EQ(messages.back()["text"], "离线消息 3");
+    EXPECT_EQ(messages[messages.size() - 3]["seq"], sent.front());
+
+    li.send(MessageType::SYNC_REQ, { { "afterSeq", sent[0] } });   // 只要第一条之后的
+    std::optional<Packet> tail = li.receive();
+    ASSERT_TRUE(tail);
+    ASSERT_EQ(tail->body["messages"].size(), 2u);
+    EXPECT_EQ(tail->body["messages"][0]["seq"], sent[1]);
+
+    li.send(MessageType::SYNC_REQ, { { "afterSeq", 0 }, { "limit", 2 } });   // 分批
+    std::optional<Packet> page = li.receive();
+    ASSERT_TRUE(page);
+    EXPECT_EQ(page->body["messages"].size(), 2u);
+    EXPECT_EQ(page->body["hasMore"], true);
+
+    li.send(MessageType::SYNC_REQ, { { "afterSeq", sent.back() } });   // 已经是最新的
+    std::optional<Packet> none = li.receive();
+    ASSERT_TRUE(none);
+    EXPECT_TRUE(none->body["messages"].empty());
+}
+
+TEST_F(ChatServerTest, SyncIncludesGroupMessagesOfMyGroupsOnly) {
+    startServer();
+    {
+        TestClient li(port_);
+        ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+        li.send(MessageType::SEND_MSG_REQ, groupRequest("g1", 1002, "C++ 群的消息"));   // 1002：10002、10001、10005
+        ASSERT_TRUE(li.receive());
+    }
+    TestClient wang(port_);   // 10003 不在 1002 群里
+    ASSERT_EQ(wang.login("QQ", "10003")["ok"], true);
+    wang.send(MessageType::SYNC_REQ, { { "afterSeq", 0 } });
+    std::optional<Packet> sync = wang.receive();
+    ASSERT_TRUE(sync);
+    for (const json& m : sync->body["messages"]) EXPECT_NE(m.value("text", ""), "C++ 群的消息");
+    TestClient sun(port_);    // 10005 在 1002 群里
+    ASSERT_EQ(sun.login("QQ", "10005")["ok"], true);
+    sun.send(MessageType::SYNC_REQ, { { "afterSeq", 0 } });
+    std::optional<Packet> sunSync = sun.receive();
+    ASSERT_TRUE(sunSync);
+    ASSERT_FALSE(sunSync->body["messages"].empty());
+    EXPECT_EQ(sunSync->body["messages"].back()["text"], "C++ 群的消息");
+    EXPECT_EQ(sunSync->body["messages"].back()["groupNo"], 1002);
+}
+
+TEST_F(ChatServerTest, ReadReceiptReachesSenderAndClearsUnread) {
+    startServer();
+    TestClient zhang(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    zhang.send(MessageType::SEND_MSG_REQ, sendRequest("r1", "10002", "看到回我"));
+    std::optional<Packet> ack = zhang.receive();
+    ASSERT_TRUE(ack);
+    const int seq = ack->body["seq"].get<int>();
+
+    auto li = std::make_unique<TestClient>(port_);
+    json login = li->login("QQ", "10002");
+    ASSERT_EQ(login["ok"], true);
+    EXPECT_EQ(login["unreadPrivate"], 1);
+    li->send(MessageType::READ_REQ, { { "reqId", 4 }, { "peer", "10001" }, { "seq", seq } });
+    std::optional<Packet> readOk = li->receive();
+    ASSERT_TRUE(readOk);
+    EXPECT_EQ(readOk->type, MessageType::READ_RESP);
+    EXPECT_EQ(readOk->body["ok"], true);
+
+    std::optional<Packet> receipt = zhang.receive();
+    ASSERT_TRUE(receipt);
+    EXPECT_EQ(receipt->type, MessageType::READ_RECEIPT);
+    EXPECT_EQ(receipt->body["reader"], "10002");
+    EXPECT_EQ(receipt->body["seq"], seq);
+
+    li.reset();   // 重新登录：未读已经清零（已读位置是持久化的）
+    TestClient again(port_);
+    EXPECT_EQ(again.login("QQ", "10002")["unreadPrivate"], 0);
 }

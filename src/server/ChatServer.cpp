@@ -1,4 +1,6 @@
 #include "ChatServer.h"
+#include <cstdlib>
+#include <optional>
 #include <vector>
 #include "Log.h"
 #include "Platform.h"
@@ -19,6 +21,38 @@ json reply(const json& request) {
     auto it = request.find("reqId");
     if (it != request.end()) body["reqId"] = *it;
     return body;
+}
+
+// 整数字段：缺少或类型不对时返回 fallback
+long long number(const json& request, const char* key, long long fallback) {
+    auto it = request.find(key);
+    return it != request.end() && it->is_number_integer() ? it->get<long long>() : fallback;
+}
+
+// 一条消息的 JSON 表示（推送和同步共用）。私信带 to，群消息带 groupNo
+json messageJson(const Message& m) {
+    json body = { { "seq", m.seq() },
+                  { "service", ServiceTypeHelper::code(m.service()) },
+                  { "from", m.sender() },
+                  { "text", m.text() },
+                  { "time", m.time() } };
+    if (m.isGroup()) body["groupNo"] = std::atoi(m.target().c_str());
+    else body["to"] = m.target();
+    if (m.isSystem()) body["system"] = true;   // 群系统提示（如“A 邀请 B 加入了群聊”）
+    if (m.revoked()) {                         // 撤回的消息不再下发原文
+        body["revoked"] = true;
+        body["revokedBy"] = m.revokedBy();
+        body["text"] = "";
+    }
+    return body;
+}
+
+// 从末尾找 sender 发的最后一条消息：刚保存的那条（拿到它的序号和时间）
+std::optional<Message> lastFrom(const std::vector<Message>& history, const std::string& sender) {
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        if (it->sender() == sender) return *it;
+    }
+    return std::nullopt;
 }
 
 }  // namespace
@@ -97,11 +131,15 @@ void ChatServer::dispatch(Session& session, const Packet& packet) {
         handleLogin(session, packet.body);
         return;
     case MessageType::SEND_MSG_REQ:
+    case MessageType::SYNC_REQ:
+    case MessageType::READ_REQ:
         if (!session.loggedIn) {
             sendError(session.connection, packet.body, ErrorCode::NOT_LOGGED_IN, "请先登录");
             return;
         }
-        handleSendMessage(session, packet.body);
+        if (packet.type == MessageType::SEND_MSG_REQ) handleSendMessage(session, packet.body);
+        else if (packet.type == MessageType::SYNC_REQ) handleSync(session, packet.body);
+        else handleRead(session, packet.body);
         return;
     default:
         sendError(session.connection, packet.body, ErrorCode::UNKNOWN_TYPE,
@@ -160,8 +198,9 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
     ServiceBase* me = accountOf(session);
     const std::string clientMsgId = field(request, "clientMsgId");
     const std::string to = field(request, "to");
-    if (!me || clientMsgId.empty() || to.empty()) {
-        sendError(session.connection, request, ErrorCode::BAD_REQUEST, "缺少 clientMsgId 或 to");
+    const long long groupNo = number(request, "groupNo", 0);
+    if (!me || clientMsgId.empty() || (to.empty() == (groupNo == 0))) {
+        sendError(session.connection, request, ErrorCode::BAD_REQUEST, "需要 clientMsgId，以及 to 或 groupNo 二者之一");
         return;
     }
     RecentMessages& recent = recent_[session.accountKey];
@@ -173,26 +212,37 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
         return;
     }
 
-    json ack = json{ { "clientMsgId", clientMsgId } };
+    // 交给 Platform 按业务规则保存（私信只能发给好友、群消息只有成员能发、被禁言不能发……）
+    const std::string service = ServiceTypeHelper::code(me->type());
+    const std::string text = field(request, "text");
     std::string error;
-    if (!platform_.sendPrivate(*me, to, field(request, "text"), error)) {
+    std::optional<Message> saved;
+    std::vector<std::string> receivers;
+    if (groupNo != 0) {
+        Group* group = platform_.groups().find(me->type(), static_cast<int>(groupNo));
+        if (!group) error = "群 " + std::to_string(groupNo) + " 不存在";
+        else if (platform_.sendGroupMessage(*me, *group, text, error)) {
+            saved = lastFrom(platform_.messages().groupHistory(me->type(), group->groupNo()), me->id());
+            for (const std::string& member : group->members()) {
+                if (member != me->id()) receivers.push_back(member);
+            }
+        }
+    } else if (platform_.sendPrivate(*me, to, text, error)) {
+        saved = lastFrom(platform_.messages().conversation(me->type(), me->id(), to), me->id());
+        receivers.push_back(to);
+    }
+
+    json ack = json{ { "clientMsgId", clientMsgId } };
+    if (!saved) {
         ack["ok"] = false;   // 失败的不记入去重表：客户端修正后（比如对方通过了好友验证）可以重发
-        ack["error"] = error;
+        ack["error"] = error.empty() ? "消息保存失败" : error;
         ack.update(reply(request));
         send(session.connection, MessageType::SEND_MSG_ACK, ack);
         return;
     }
-    // 取出刚保存的这条消息（从末尾找我发的最后一条），拿到它的序号和时间
-    const std::vector<Message> history = platform_.messages().conversation(me->type(), me->id(), to);
-    const Message* saved = nullptr;
-    for (auto it = history.rbegin(); it != history.rend() && !saved; ++it) {
-        if (it->sender() == me->id()) saved = &*it;
-    }
     ack["ok"] = true;
-    if (saved) {
-        ack["seq"] = saved->seq();
-        ack["time"] = saved->time();
-    }
+    ack["seq"] = saved->seq();
+    ack["time"] = saved->time();
     recent.acks[clientMsgId] = ack;
     recent.order.push_back(clientMsgId);
     if (recent.order.size() > kRecentLimit) {
@@ -202,20 +252,64 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
     ack.update(reply(request));
     send(session.connection, MessageType::SEND_MSG_ACK, ack);
 
-    // 对方在线：立即推送。不在线也没关系，消息已经保存，对方上线后能看到
-    auto online = online_.find(ServiceTypeHelper::code(me->type()) + " " + to);
-    if (saved && online != online_.end()) {
-        auto receiver = sessions_.find(online->second);
-        if (receiver != sessions_.end()) {
-            send(receiver->second.connection, MessageType::MSG_PUSH,
-                 json{ { "seq", saved->seq() },
-                       { "service", ServiceTypeHelper::code(me->type()) },
-                       { "from", me->id() },
-                       { "to", to },
-                       { "text", saved->text() },
-                       { "time", saved->time() } });
+    // 在线的接收者立即推送；不在线的上线后通过 SYNC_REQ 取到
+    const json push = messageJson(*saved);
+    for (const std::string& receiver : receivers) pushTo(service + " " + receiver, MessageType::MSG_PUSH, push);
+}
+
+void ChatServer::handleSync(Session& session, const json& request) {
+    ServiceBase* me = accountOf(session);
+    if (!me) return;
+    const long long afterSeq = number(request, "afterSeq", 0);
+    long long limit = number(request, "limit", kSyncDefaultLimit);
+    if (limit <= 0 || limit > kSyncMaxLimit) limit = kSyncMaxLimit;
+
+    std::vector<int> groupNos;
+    for (const Group* group : platform_.groups().groupsOf(me->type(), me->id())) groupNos.push_back(group->groupNo());
+    json messages = json::array();
+    bool hasMore = false;
+    // messagesFor 按序号从小到大排列：跳过已经有的，最多取 limit 条，剩下的让客户端接着要
+    for (const Message& m : platform_.messages().messagesFor(me->type(), me->id(), groupNos)) {
+        if (m.seq() <= afterSeq) continue;
+        if (static_cast<long long>(messages.size()) == limit) {
+            hasMore = true;
+            break;
         }
+        messages.push_back(messageJson(m));
     }
+    json response = reply(request);
+    response["messages"] = std::move(messages);
+    response["hasMore"] = hasMore;
+    send(session.connection, MessageType::SYNC_RESP, response);
+}
+
+void ChatServer::handleRead(Session& session, const json& request) {
+    ServiceBase* me = accountOf(session);
+    const std::string peer = field(request, "peer");
+    const long long groupNo = number(request, "groupNo", 0);
+    const long long seq = number(request, "seq", 0);
+    if (!me || seq <= 0 || (peer.empty() == (groupNo == 0))) {
+        sendError(session.connection, request, ErrorCode::BAD_REQUEST, "需要 seq，以及 peer 或 groupNo 二者之一");
+        return;
+    }
+    const std::string service = ServiceTypeHelper::code(me->type());
+    if (groupNo != 0) {
+        // 群消息只记录已读位置，不发回执：群里人多，每人每读一次都通知所有人代价太大
+        platform_.messages().markGroupRead(me->type(), static_cast<int>(groupNo), me->id(), static_cast<int>(seq));
+    } else {
+        platform_.messages().markPrivateRead(me->type(), me->id(), peer, static_cast<int>(seq));
+        pushTo(service + " " + peer, MessageType::READ_RECEIPT, json{ { "reader", me->id() }, { "seq", seq } });
+    }
+    json response = reply(request);
+    response["ok"] = true;
+    send(session.connection, MessageType::READ_RESP, response);
+}
+
+void ChatServer::pushTo(const std::string& accountKey, MessageType type, const json& body) {
+    auto online = online_.find(accountKey);
+    if (online == online_.end()) return;
+    auto receiver = sessions_.find(online->second);
+    if (receiver != sessions_.end()) send(receiver->second.connection, type, body);
 }
 
 ServiceBase* ChatServer::accountOf(const Session& session) const {
