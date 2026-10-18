@@ -19,6 +19,7 @@ const char* messageTypeName(MessageType type) {
     case MessageType::CALL_RESP: return "CALL_RESP";
     case MessageType::PRESENCE: return "PRESENCE";
     case MessageType::MSG_REVOKED: return "MSG_REVOKED";
+    case MessageType::DATA_CHANGED: return "DATA_CHANGED";
     case MessageType::ERROR_RESP: return "ERROR_RESP";
     }
     return "UNKNOWN";

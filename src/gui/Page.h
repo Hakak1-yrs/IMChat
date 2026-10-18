@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <functional>
 #include "PageModel.h"
 
 class GuiWindow;
@@ -7,6 +8,7 @@ class MainView;
 class Platform;
 class ServiceBase;
 class LocalSession;
+class Session;
 class User;
 
 // 功能页抽象基类：个人中心、好友资料、跨服务好友、群设置、全部群、点对点聊天、实时群聊室都从它派生。
@@ -26,7 +28,10 @@ public:
     virtual std::string key() const;                    // 页面对应的会话（用于左侧列表高亮），如 "P:10002"
 
 protected:
-    LocalSession& session();   // 功能页只在单机模式下开放，直接使用单机模式的会话
+    Session& session();          // 单机、联网两种模式都能用的页面通过它取数据、做操作
+    LocalSession& local();       // 只在单机模式下开放的页面使用（直接操作业务对象）
+    // 修改类操作的回调：提示结果并刷新。只引用窗口（窗口一直存在），联网模式的结果晚到时页面可能已经关了
+    std::function<void(bool, const std::string&)> report();
     Platform& platform();
     ServiceBase& me();          // 当前正在使用的服务账号
     User& user();

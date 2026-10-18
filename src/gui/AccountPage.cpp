@@ -178,7 +178,7 @@ void AccountPage::closeService() {
             }
             main().endNetworkSessions();   // 群聊室、点对点聊天用到这个账号，先结束
             std::string msg;
-            if (!session().closeCurrentService(msg)) {
+            if (!local().closeCurrentService(msg)) {
                 d.setError(GuiText::wide(msg));
                 return false;
             }
@@ -200,7 +200,7 @@ void AccountPage::deleteAccount() {
             }
             main().endNetworkSessions();
             std::string msg;
-            session().deleteCurrentUser(msg);
+            local().deleteCurrentUser(msg);
             GuiWindow& window = window_;   // 回到登录页后本页面会被销毁，先把需要的对象取出来
             window.post([&window, msg] {
                 window.showLogin();

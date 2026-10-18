@@ -1,5 +1,6 @@
 #include "Page.h"
 #include "GuiWindow.h"
+#include "GuiText.h"
 #include "MainView.h"
 
 Page::Page(GuiWindow& window) : window_(window) {}
@@ -10,7 +11,18 @@ bool Page::poll() { return false; }
 
 std::string Page::key() const { return ""; }
 
-LocalSession& Page::session() { return window_.localSession(); }
+Session& Page::session() { return window_.session(); }
+
+LocalSession& Page::local() { return window_.localSession(); }
+
+std::function<void(bool, const std::string&)> Page::report() {
+    GuiWindow& window = window_;
+    return [&window](bool, const std::string& message) {
+        if (!message.empty()) window.mainView().toast(GuiText::wide(message));
+        window.mainView().reload();
+        window.invalidate();
+    };
+}
 
 Platform& Page::platform() { return window_.platform(); }
 

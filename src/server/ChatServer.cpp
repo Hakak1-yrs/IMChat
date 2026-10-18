@@ -1,12 +1,15 @@
 #include "ChatServer.h"
 #include <cstdlib>
+#include <iostream>
 #include <optional>
+#include <sstream>
 #include <vector>
 #include "Group.h"
 #include "GroupPolicy.h"
 #include "Log.h"
 #include "Platform.h"
 #include "ServiceType.h"
+#include "Util.h"
 
 namespace {
 
@@ -316,6 +319,133 @@ void ChatServer::registerApi() {
     api_["groups.list"] = [this](Session&, ServiceBase& me, const json&) { return groupsList(me); };
     api_["reads.get"] = [this](Session&, ServiceBase& me, const json&) { return readsGet(me); };
     api_["message.revoke"] = [this](Session&, ServiceBase& me, const json& args) { return revokeMessage(me, args); };
+    api_["social.get"] = [this](Session&, ServiceBase& me, const json&) { return socialGet(me); };
+    api_["profile.get"] = [this](Session&, ServiceBase& me, const json& args) { return profileGet(me, args); };
+    api_["friends.request"] = [this](Session&, ServiceBase& me, const json& args) { return requestFriend(me, args); };
+    api_["friends.respond"] = [this](Session&, ServiceBase& me, const json& args) { return respondRequest(me, args); };
+    api_["friends.remove"] = [this](Session&, ServiceBase& me, const json& args) { return removeFriend(me, args); };
+    api_["friends.remark"] = [this](Session&, ServiceBase& me, const json& args) { return setRemark(me, args); };
+    api_["friends.block"] = [this](Session&, ServiceBase& me, const json& args) { return setBlocked(me, args); };
+    api_["settings.verify"] = [this](Session&, ServiceBase& me, const json& args) { return setVerification(me, args); };
+}
+
+// ---- 好友：申请与验证、删除、备注、黑名单 ----
+
+json ChatServer::socialGet(ServiceBase& me) {
+    auto nick = [&](const std::string& id) {
+        ServiceBase* account = platform_.findAccount(me.type(), id);
+        return account ? account->nickname() : id;
+    };
+    json requests = json::array();
+    for (const FriendRequest& r : platform_.friendRequests(me)) {   // 最新的在前
+        const char* status = r.status == FriendRequest::ACCEPTED ? "accepted" : r.status == FriendRequest::REJECTED ? "rejected" : "pending";
+        requests.push_back({ { "seq", r.seq }, { "from", r.from }, { "to", r.to }, { "fromNickname", nick(r.from) },
+                             { "toNickname", nick(r.to) }, { "greeting", r.greeting }, { "time", r.time }, { "status", status } });
+    }
+    json blocked = json::array();
+    for (const std::string& id : platform_.blockedList(me)) blocked.push_back({ { "id", id }, { "nickname", nick(id) } });
+    return json{ { "requests", std::move(requests) }, { "verify", platform_.requiresVerification(me) }, { "blocked", std::move(blocked) } };
+}
+
+json ChatServer::profileGet(ServiceBase& me, const json& args) {
+    const std::string id = field(args, "id");
+    ServiceBase* other = platform_.findAccount(me.type(), id);
+    if (!other) return json{ { "exists", false }, { "id", id } };
+    // 多态：showInfo() 按账号的实际类型（QQ、微信……）输出各自的资料，原样转成一行一行的文字
+    std::ostringstream buffer;
+    std::streambuf* original = std::cout.rdbuf(buffer.rdbuf());
+    other->showInfo();
+    std::cout.rdbuf(original);
+    json info = json::array();
+    std::istringstream lines(buffer.str());
+    for (std::string line; std::getline(lines, line);) {
+        line = Util::trim(line);
+        if (!line.empty()) info.push_back(line);
+    }
+    json mutual = json::array();
+    for (const std::string& m : platform_.mutualFriends(me, *other)) {
+        ServiceBase* account = platform_.findAccount(me.type(), m);
+        mutual.push_back({ { "id", m }, { "nickname", account ? account->nickname() : m } });
+    }
+    const Friend* f = me.friends().find(id);
+    return json{ { "exists", true },
+                 { "id", id },
+                 { "nickname", other->nickname() },
+                 { "location", other->location() },
+                 { "birthday", other->birthday().toString() },
+                 { "tAge", other->tAge() },
+                 { "idLabel", other->idLabel() },
+                 { "info", std::move(info) },
+                 { "isFriend", f != nullptr },
+                 { "remark", f && f->remark() != "-" ? f->remark() : "" },
+                 { "peerHasMe", other->friends().contains(me.id()) },
+                 { "blocked", platform_.isBlocked(me.type(), me.id(), id) },
+                 { "online", isOnline(ServiceTypeHelper::code(me.type()) + " " + id) },
+                 { "mutual", std::move(mutual) } };
+}
+
+json ChatServer::requestFriend(ServiceBase& me, const json& args) {
+    const std::string target = field(args, "target");
+    std::string msg;
+    if (!platform_.requestFriend(me, target, field(args, "greeting"), field(args, "remark"), msg)) throw ApiError(msg);
+    persist();
+    const bool friends = me.friends().contains(target);   // 对方没开验证：已经直接成为好友
+    notifyChanged(me.type(), target, { "social", "contacts" });
+    return json{ { "message", msg }, { "becameFriends", friends } };
+}
+
+json ChatServer::respondRequest(ServiceBase& me, const json& args) {
+    const int seq = static_cast<int>(number(args, "seq", 0));
+    std::string from;
+    for (const FriendRequest& r : platform_.friendRequests(me)) {
+        if (r.seq == seq) from = r.from;
+    }
+    std::string msg;
+    if (!platform_.respondRequest(me, seq, args.value("accept", false), field(args, "remark"), msg)) throw ApiError(msg);
+    persist();
+    notifyChanged(me.type(), from, { "social", "contacts" });   // 申请人那边：申请状态变了，可能多了一个好友
+    return json{ { "message", msg } };
+}
+
+json ChatServer::removeFriend(ServiceBase& me, const json& args) {
+    const std::string id = field(args, "id");
+    std::string msg;
+    if (!platform_.removeFriend(me, id, msg)) throw ApiError(msg);
+    persist();
+    notifyChanged(me.type(), id, { "contacts" });   // 单向删除：对方列表不变，但资料页会提示“对方已把你删除”
+    return json{ { "message", msg } };
+}
+
+json ChatServer::setRemark(ServiceBase& me, const json& args) {
+    const std::string id = field(args, "id");
+    const std::string remark = Util::toField(Util::lineText(field(args, "remark")));
+    if (remark.empty()) throw ApiError("备注不能为空。");
+    if (!me.friends().modifyRemark(id, remark)) throw ApiError(id + " 不是你的好友。");
+    persist();
+    return json{ { "message", "备注已修改" } };
+}
+
+json ChatServer::setBlocked(ServiceBase& me, const json& args) {
+    std::string msg;
+    if (!platform_.setBlocked(me, field(args, "id"), args.value("on", true), msg)) throw ApiError(msg);
+    return json{ { "message", msg } };
+}
+
+json ChatServer::setVerification(ServiceBase& me, const json& args) {
+    const bool on = args.value("on", true);
+    platform_.setVerification(me, on);
+    return json{ { "verify", on }, { "message", on ? "已开启好友验证" : "已关闭好友验证" } };
+}
+
+void ChatServer::notifyChanged(ServiceType type, const std::string& id, std::initializer_list<const char*> topics) {
+    json list = json::array();
+    for (const char* topic : topics) list.push_back(topic);
+    pushTo(ServiceTypeHelper::code(type) + " " + id, MessageType::DATA_CHANGED, json{ { "topics", std::move(list) } });
+}
+
+void ChatServer::persist() {
+    // 好友关系、备注保存在 friends.txt 等文件中，原来只在程序退出时写回；服务端长期运行，改完立即保存，崩溃也不丢
+    if (!platform_.save()) Log::warn("保存数据文件失败（可能被其他程序改过，已另存冲突副本）");
 }
 
 void ChatServer::handleCall(Session& session, const json& request) {

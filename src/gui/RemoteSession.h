@@ -54,6 +54,17 @@ public:
     bool canRevoke(const Message& m) const override;
     void revoke(const Message& m) override;
     std::string revokeText(const Message& m) const override;
+    std::vector<FriendRequestView> friendRequests() const override;
+    bool requiresVerification() const override;
+    std::vector<std::string> blockedList() const override;
+    void loadProfile(const std::string& id) override;
+    void requestFriend(const std::string& target, const std::string& greeting, const std::string& remark, Done done) override;
+    void respondRequest(int seq, bool accept, const std::string& remark, Done done) override;
+    void removeFriend(const std::string& id, Done done) override;
+    void setRemark(const std::string& id, const std::string& remark, Done done) override;
+    void setBlocked(const std::string& id, bool on, Done done) override;
+    void setVerification(bool on, Done done) override;
+    int pendingFriendRequests() const override;
     bool changed() override;
     std::string takeNotice() override;
     std::string status() const override;
@@ -85,6 +96,13 @@ private:
     void onLogin(bool ok, const nlohmann::json& response);
     void loadLists();
     void listLoaded();
+    // 发一个通用请求，成功后在界面线程里调用 apply；initial 为 true 表示是登录时的首次加载（计入加载进度）
+    void fetch(const char* op, nlohmann::json args, std::function<void(const nlohmann::json&)> apply, bool initial);
+    void reload(const std::string& topic);   // 重新取一类数据："contacts" / "social"
+    // 修改类请求：成功后重新取 topics 对应的数据（以及 profileId 的资料），再把结果交给 done
+    void mutate(const char* op, nlohmann::json args, std::vector<std::string> topics, const std::string& profileId, Done done);
+    void applySocial(const nlohmann::json& data);
+    void applyProfile(const nlohmann::json& data);
     void applyMessage(const nlohmann::json& message);
     void applyAck(const nlohmann::json& ack);
     void applyContacts(const nlohmann::json& data);
@@ -117,6 +135,10 @@ private:
     std::map<std::string, int> peerRead_;      // 好友 → 对方读到我发的哪一条
     std::map<std::string, std::string> nicknames_;
     std::vector<PendingEntry> pending_;
+    std::vector<FriendRequestView> requests_;
+    bool verify_ = true;
+    std::vector<std::string> blocked_;
+    std::map<std::string, ProfileView> profiles_;   // 打开过的资料页从服务端取回的完整资料
     bool dirty_ = false;
     std::string notice_;
     std::string status_;

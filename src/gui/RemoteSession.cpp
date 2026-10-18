@@ -81,6 +81,8 @@ ChatClient::Callbacks RemoteSession::callbacks() {
             } else if (type == MessageType::MSG_REVOKED) {
                 auto it = messages_.find(body.value("seq", 0));
                 if (it != messages_.end()) it->second.markRevoked(body.value("revokedBy", ""));
+            } else if (type == MessageType::DATA_CHANGED) {   // 别人的操作影响了我（如通过了我的好友申请）
+                for (const std::string& topic : body.value("topics", std::vector<std::string>())) reload(topic);
             }
         });
     };
@@ -128,23 +130,98 @@ void RemoteSession::onLogin(bool ok, const json& response) {
 }
 
 void RemoteSession::loadLists() {
-    listsLoading_ = 3;
-    auto request = [this](const char* op, void (RemoteSession::*apply)(const json&)) {
-        client_->call(op, json::object(), [this, apply](bool ok, const json& data, const std::string& error) {
-            post([this, ok, data, error, apply] {
-                if (ok) (this->*apply)(data);
-                else notice_ = error;
-                listLoaded();
-            });
-        });
-    };
-    request("contacts.list", &RemoteSession::applyContacts);
-    request("groups.list", &RemoteSession::applyGroups);
-    request("reads.get", &RemoteSession::applyReads);
+    listsLoading_ = 4;
+    fetch("contacts.list", json::object(), [this](const json& d) { applyContacts(d); }, true);
+    fetch("groups.list", json::object(), [this](const json& d) { applyGroups(d); }, true);
+    fetch("reads.get", json::object(), [this](const json& d) { applyReads(d); }, true);
+    fetch("social.get", json::object(), [this](const json& d) { applySocial(d); }, true);
+    for (const auto& entry : profiles_) loadProfile(entry.first);   // 断线重连后，打开过的资料也刷新一遍
 }
 
 void RemoteSession::listLoaded() {
     if (--listsLoading_ == 0 && loginState_ == LoginState::LOADING) loginState_ = LoginState::READY;
+}
+
+void RemoteSession::fetch(const char* op, json args, std::function<void(const json&)> apply, bool initial) {
+    client_->call(op, std::move(args), [this, apply, initial](bool ok, const json& data, const std::string& error) {
+        post([this, apply, initial, ok, data, error] {
+            if (ok) apply(data);
+            else if (!initial) notice_ = error;   // 首次加载失败不打扰（多半是断线，重连后会重新加载）
+            if (initial) listLoaded();
+        });
+    });
+}
+
+void RemoteSession::reload(const std::string& topic) {
+    if (topic == "contacts") {
+        fetch("contacts.list", json::object(), [this](const json& d) { applyContacts(d); }, false);
+        for (const auto& entry : profiles_) loadProfile(entry.first);   // 好友关系变了，资料页上的“是否好友”等也要更新
+    } else if (topic == "social") {
+        fetch("social.get", json::object(), [this](const json& d) { applySocial(d); }, false);
+    }
+}
+
+void RemoteSession::mutate(const char* op, json args, std::vector<std::string> topics, const std::string& profileId, Done done) {
+    client_->call(op, std::move(args), [this, topics, profileId, done](bool ok, const json& data, const std::string& error) {
+        post([this, topics, profileId, done, ok, data, error] {
+            if (ok) {
+                for (const std::string& topic : topics) reload(topic);
+                if (!profileId.empty()) loadProfile(profileId);
+            }
+            if (done) done(ok, ok ? data.value("message", "") : error);
+        });
+    });
+}
+
+void RemoteSession::applySocial(const json& data) {
+    requests_.clear();
+    for (const json& item : data.value("requests", json::array())) {
+        FriendRequestView view;
+        view.seq = item.value("seq", 0);
+        view.from = item.value("from", "");
+        view.to = item.value("to", "");
+        view.greeting = item.value("greeting", "");
+        view.time = item.value("time", "");
+        const std::string status = item.value("status", "pending");
+        view.status = status == "accepted" ? FriendRequestView::ACCEPTED
+                      : status == "rejected" ? FriendRequestView::REJECTED
+                                             : FriendRequestView::PENDING;
+        nicknames_[view.from] = item.value("fromNickname", view.from);
+        nicknames_[view.to] = item.value("toNickname", view.to);
+        requests_.push_back(view);
+    }
+    verify_ = data.value("verify", true);
+    blocked_.clear();
+    for (const json& item : data.value("blocked", json::array())) {
+        blocked_.push_back(item.value("id", ""));
+        nicknames_[item.value("id", "")] = item.value("nickname", "");
+    }
+}
+
+void RemoteSession::applyProfile(const json& data) {
+    ProfileView view;
+    view.id = data.value("id", "");
+    view.known = data.value("exists", false);
+    if (view.known) {
+        view.nickname = data.value("nickname", view.id);
+        view.location = data.value("location", "");
+        view.birthday = data.value("birthday", "");
+        view.tAge = data.value("tAge", 0);
+        view.idLabel = data.value("idLabel", "");
+        view.info = data.value("info", std::vector<std::string>());
+        view.isFriend = data.value("isFriend", false);
+        view.remark = data.value("remark", "");
+        view.peerHasMe = data.value("peerHasMe", true);
+        view.blocked = data.value("blocked", false);
+        view.showOnline = true;
+        view.online = data.value("online", false);
+        for (const json& m : data.value("mutual", json::array())) {
+            view.mutualFriends.push_back(m.value("id", ""));
+            nicknames_[m.value("id", "")] = m.value("nickname", "");
+        }
+        nicknames_[view.id] = view.nickname;
+    }
+    profiles_[view.id] = view;
 }
 
 void RemoteSession::applyContacts(const json& data) {
@@ -433,18 +510,68 @@ std::optional<GroupView> RemoteSession::group(const Conversation& c) const {
 
 ProfileView RemoteSession::profile(const std::string& id) const {
     ProfileView view;
+    view.id = id;
+    auto cached = profiles_.find(id);
+    if (cached != profiles_.end()) view = cached->second;   // 资料页取回的完整资料
     auto it = friends_.find(id);
     if (it == friends_.end()) return view;
+    // 好友：在线状态、备注以联系人列表为准（它们靠推送和重新加载保持最新）
     const FriendEntry& f = it->second;
     view.known = true;
-    view.nickname = f.nickname;
-    view.location = f.location;
-    view.birthday = f.birthday;
-    view.tAge = f.tAge;
+    view.isFriend = true;
+    view.remark = f.remark;
     view.showOnline = true;
     view.online = f.online;
-    view.mutualFriends = f.mutual;
+    if (cached == profiles_.end()) {
+        view.nickname = f.nickname;
+        view.location = f.location;
+        view.birthday = f.birthday;
+        view.tAge = f.tAge;
+        view.mutualFriends = f.mutual;
+    }
     return view;
+}
+
+std::vector<FriendRequestView> RemoteSession::friendRequests() const { return requests_; }
+
+bool RemoteSession::requiresVerification() const { return verify_; }
+
+std::vector<std::string> RemoteSession::blockedList() const { return blocked_; }
+
+int RemoteSession::pendingFriendRequests() const {
+    int count = 0;
+    for (const FriendRequestView& r : requests_) count += r.to == me_.id && r.status == FriendRequestView::PENDING ? 1 : 0;
+    return count;
+}
+
+void RemoteSession::loadProfile(const std::string& id) {
+    fetch("profile.get", json{ { "id", id } }, [this](const json& d) { applyProfile(d); }, false);
+}
+
+void RemoteSession::requestFriend(const std::string& target, const std::string& greeting, const std::string& remark, Done done) {
+    mutate("friends.request", json{ { "target", target }, { "greeting", greeting }, { "remark", remark } }, { "contacts", "social" },
+           target, std::move(done));
+}
+
+void RemoteSession::respondRequest(int seq, bool accept, const std::string& remark, Done done) {
+    mutate("friends.respond", json{ { "seq", seq }, { "accept", accept }, { "remark", remark } }, { "contacts", "social" }, "",
+           std::move(done));
+}
+
+void RemoteSession::removeFriend(const std::string& id, Done done) {
+    mutate("friends.remove", json{ { "id", id } }, { "contacts" }, id, std::move(done));
+}
+
+void RemoteSession::setRemark(const std::string& id, const std::string& remark, Done done) {
+    mutate("friends.remark", json{ { "id", id }, { "remark", remark } }, { "contacts" }, id, std::move(done));
+}
+
+void RemoteSession::setBlocked(const std::string& id, bool on, Done done) {
+    mutate("friends.block", json{ { "id", id }, { "on", on } }, { "social" }, id, std::move(done));
+}
+
+void RemoteSession::setVerification(bool on, Done done) {
+    mutate("settings.verify", json{ { "on", on } }, { "social" }, "", std::move(done));
 }
 
 std::string RemoteSession::nicknameOf(const std::string& id) const {

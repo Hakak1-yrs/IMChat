@@ -1,6 +1,7 @@
 #include "LocalSession.h"
 #include <algorithm>
 #include <map>
+#include "GuiText.h"
 #include "Util.h"
 
 LocalSession::LocalSession(Platform& platform) : platform_(platform) {}
@@ -262,6 +263,7 @@ std::optional<GroupView> LocalSession::group(const Conversation& c) const {
 
 ProfileView LocalSession::profile(const std::string& id) const {
     ProfileView view;
+    view.id = id;
     ServiceBase* other = platform_.findAccount(current_->type(), id);
     if (!other) return view;
     view.known = true;
@@ -269,8 +271,75 @@ ProfileView LocalSession::profile(const std::string& id) const {
     view.location = other->location();
     view.birthday = other->birthday().toString();
     view.tAge = other->tAge();
+    view.idLabel = other->idLabel();
+    view.info = GuiText::capture([&] { other->showInfo(); });   // 多态：按账号的实际类型输出资料
+    const Friend* f = current_->friends().find(id);
+    view.isFriend = f != nullptr;
+    view.remark = f && f->remark() != "-" ? f->remark() : "";
+    view.peerHasMe = other->friends().contains(current_->id());
+    view.blocked = platform_.isBlocked(current_->type(), current_->id(), id);
     view.mutualFriends = platform_.mutualFriends(*current_, *other);
     return view;
+}
+
+std::vector<FriendRequestView> LocalSession::friendRequests() const {
+    std::vector<FriendRequestView> result;
+    for (const FriendRequest& r : platform_.friendRequests(*current_)) {
+        FriendRequestView view;
+        view.seq = r.seq;
+        view.from = r.from;
+        view.to = r.to;
+        view.greeting = r.greeting;
+        view.time = r.time;
+        view.status = r.status == FriendRequest::ACCEPTED   ? FriendRequestView::ACCEPTED
+                      : r.status == FriendRequest::REJECTED ? FriendRequestView::REJECTED
+                                                            : FriendRequestView::PENDING;
+        result.push_back(view);
+    }
+    return result;
+}
+
+bool LocalSession::requiresVerification() const { return platform_.requiresVerification(*current_); }
+
+std::vector<std::string> LocalSession::blockedList() const { return platform_.blockedList(*current_); }
+
+void LocalSession::requestFriend(const std::string& target, const std::string& greeting, const std::string& remark, Done done) {
+    std::string msg;
+    const bool ok = platform_.requestFriend(*current_, target, greeting, remark, msg);
+    done(ok, msg);
+}
+
+void LocalSession::respondRequest(int seq, bool accept, const std::string& remark, Done done) {
+    std::string msg;
+    const bool ok = platform_.respondRequest(*current_, seq, accept, remark, msg);
+    done(ok, msg);
+}
+
+void LocalSession::removeFriend(const std::string& id, Done done) {
+    std::string msg;
+    const bool ok = platform_.removeFriend(*current_, id, msg);
+    done(ok, msg);
+}
+
+void LocalSession::setRemark(const std::string& id, const std::string& remark, Done done) {
+    const std::string text = Util::toField(Util::lineText(remark));
+    if (text.empty()) {
+        done(false, "备注不能为空。");
+        return;
+    }
+    const bool ok = current_->friends().modifyRemark(id, text);
+    done(ok, ok ? "备注已修改" : id + " 不是你的好友。");
+}
+
+void LocalSession::setBlocked(const std::string& id, bool on, Done done) {
+    std::string msg;
+    const bool ok = platform_.setBlocked(*current_, id, on, msg);
+    done(ok, msg);
+}
+
+void LocalSession::setVerification(bool on, Done done) {
+    platform_.setVerification(*current_, on);
+    done(true, on ? "已开启好友验证" : "已关闭好友验证");
 }
 
 std::string LocalSession::nicknameOf(const std::string& id) const {

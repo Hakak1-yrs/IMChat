@@ -46,6 +46,15 @@ public:
     bool canRevoke(const Message& m) const override;
     void revoke(const Message& m) override;
     std::string revokeText(const Message& m) const override;
+    std::vector<FriendRequestView> friendRequests() const override;
+    bool requiresVerification() const override;
+    std::vector<std::string> blockedList() const override;
+    void requestFriend(const std::string& target, const std::string& greeting, const std::string& remark, Done done) override;
+    void respondRequest(int seq, bool accept, const std::string& remark, Done done) override;
+    void removeFriend(const std::string& id, Done done) override;
+    void setRemark(const std::string& id, const std::string& remark, Done done) override;
+    void setBlocked(const std::string& id, bool on, Done done) override;
+    void setVerification(bool on, Done done) override;
     bool changed() override;
     std::string takeNotice() override;
     int pendingFriendRequests() const override;

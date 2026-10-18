@@ -47,6 +47,7 @@
 | `CALL_RESP` | 501 | S → C | 成功：`{reqId, ok: true, data}`；失败：`{reqId, ok: false, error}` |
 | `PRESENCE` | 510 | S → C | `{account, online}`：好友上线 / 下线 |
 | `MSG_REVOKED` | 511 | S → C | `{seq, revokedBy}`：会话里的一条消息被撤回 |
+| `DATA_CHANGED` | 512 | S → C | `{topics: ["contacts", "social"]}`：别人的操作影响了我（如通过了我的好友申请），重新获取对应数据 |
 | `ERROR_RESP` | 900 | S → C | `{reqId?, code, message}` |
 
 `LOGIN_RESP` 成功时还带有 `location`（所在地）和 `momentsName`（QQ空间 / 朋友圈……）。
@@ -61,6 +62,16 @@
 | `groups.list` | — | `{groups: [{groupNo, name, mode, modeName, notice, owner, admins, muted, members: [{id, nickname}], canSpeak, canMentionAll, revocable}]}` |
 | `reads.get` | — | `{private: {好友: 我读到的序号}, peerRead: {好友: 对方读到的序号}, groups: {群号: 我读到的序号}}` |
 | `message.revoke` | `{seq}` | `{seq, revokedBy}`；同时向会话里其他在线的人推送 `MSG_REVOKED` |
+| `social.get` | — | `{requests: [{seq, from, to, fromNickname, toNickname, greeting, time, status: "pending"\|"accepted"\|"rejected"}], verify, blocked: [{id, nickname}]}` |
+| `profile.get` | `{id}` | `{exists, id, nickname, location, birthday, tAge, idLabel, info: [按账号类型输出的资料], isFriend, remark, peerHasMe, blocked, online, mutual}` |
+| `friends.request` | `{target, greeting, remark}` | `{message, becameFriends}`；对方没开验证时直接成为好友；向对方推送 `DATA_CHANGED` |
+| `friends.respond` | `{seq, accept, remark}` | `{message}`；向申请人推送 `DATA_CHANGED` |
+| `friends.remove` | `{id}` | `{message}`（单向删除） |
+| `friends.remark` | `{id, remark}` | `{message}` |
+| `friends.block` | `{id, on}` | `{message}` |
+| `settings.verify` | `{on}` | `{verify, message}` |
+
+修改好友关系、备注的操作，服务端会立即把数据文件写回磁盘；消息类记录（好友申请、拉黑等）本来就是即时追加写入的。
 
 `groups.list` 里的 `canSpeak`（我能否发言）、`canMentionAll`（我能否 @所有人）、`revocable`（我能撤回哪些成员的消息），都由服务端按群当前的管理策略算好。客户端直接使用，不必重复实现权限规则，也就不会出现两边规则不一致的问题。
 

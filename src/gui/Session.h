@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -33,15 +34,32 @@ struct GroupView {   // 群资料（聊天面板的资料抽屉、@ 提醒）
     bool canMentionAll = false;   // 我能不能 @所有人
 };
 
-struct ProfileView {   // 私信对方的资料（聊天面板的资料抽屉）
-    bool known = false;                      // 账号存在
+struct ProfileView {   // 某个账号的资料（资料抽屉、好友资料页）
+    bool known = false;                      // 账号存在（联网模式下还要等资料取回来）
+    std::string id;
     std::string nickname;
     std::string location;
     std::string birthday;
     int tAge = 0;
+    std::string idLabel;                     // “QQ号”“微信号”……
+    std::vector<std::string> info;           // 账号按自己的类型输出的资料（多态 showInfo），一行一条
+    bool isFriend = false;
+    std::string remark;                      // 我给对方的备注
+    bool peerHasMe = true;                   // 对方的好友列表里还有我（false 表示被对方单向删除）
+    bool blocked = false;                    // 我把对方拉黑了
     bool showOnline = false;                 // 联网模式才知道对方是否在线
     bool online = false;
     std::vector<std::string> mutualFriends;  // 共同好友的账号
+};
+
+struct FriendRequestView {   // “新的朋友”中的一条好友申请
+    enum Status { PENDING, ACCEPTED, REJECTED };
+    int seq = 0;
+    std::string from;
+    std::string to;
+    std::string greeting;
+    std::string time;
+    Status status = PENDING;
 };
 
 struct PendingView {   // 联网模式：已经发出、还没收到服务端确认的消息（断线时会一直等到重连后补发）
@@ -56,6 +74,9 @@ struct PendingView {   // 联网模式：已经发出、还没收到服务端确
 // - RemoteSession：通过网络连接 IMChatServer（联网模式，可以在不同电脑之间聊天）。
 class Session {
 public:
+    // 修改类操作的结果：单机模式立即回调，联网模式在服务端响应后（在界面线程里）回调。message 是给用户看的结果
+    using Done = std::function<void(bool ok, const std::string& message)>;
+
     virtual ~Session() = default;
 
     virtual bool isRemote() const = 0;
@@ -90,6 +111,18 @@ public:
     virtual bool canRevoke(const Message& m) const = 0;
     virtual void revoke(const Message& m) = 0;   // 失败的原因通过 takeNotice 告诉界面
     virtual std::string revokeText(const Message& m) const = 0;   // “小张”撤回了一条消息
+
+    // ---- 好友：申请与验证、删除、备注、黑名单 ----
+    virtual std::vector<FriendRequestView> friendRequests() const = 0;   // 收到的和发出的，最新的在前
+    virtual bool requiresVerification() const = 0;                       // 加我为好友时是否需要我同意
+    virtual std::vector<std::string> blockedList() const = 0;
+    virtual void loadProfile(const std::string& id);   // 联网模式：向服务端取完整资料，取回后界面自动刷新
+    virtual void requestFriend(const std::string& target, const std::string& greeting, const std::string& remark, Done done) = 0;
+    virtual void respondRequest(int seq, bool accept, const std::string& remark, Done done) = 0;
+    virtual void removeFriend(const std::string& id, Done done) = 0;   // 单向删除
+    virtual void setRemark(const std::string& id, const std::string& remark, Done done) = 0;
+    virtual void setBlocked(const std::string& id, bool on, Done done) = 0;
+    virtual void setVerification(bool on, Done done) = 0;
 
     // ---- 刷新与提示 ----
     virtual bool changed() = 0;            // 自上次调用以来是否有新数据（新消息、其他窗口的修改……），有则界面刷新

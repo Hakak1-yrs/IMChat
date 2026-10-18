@@ -3,10 +3,12 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <initializer_list>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include "Packet.h"
+#include "ServiceType.h"
 #include "TcpServer.h"
 
 class Message;
@@ -63,6 +65,16 @@ private:
     nlohmann::json groupsList(ServiceBase& me);
     nlohmann::json readsGet(ServiceBase& me);
     nlohmann::json revokeMessage(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json socialGet(ServiceBase& me);
+    nlohmann::json profileGet(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json requestFriend(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json respondRequest(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json removeFriend(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json setRemark(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json setBlocked(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json setVerification(ServiceBase& me, const nlohmann::json& args);
+    void notifyChanged(ServiceType type, const std::string& id, std::initializer_list<const char*> topics);   // 推送 DATA_CHANGED
+    void persist();   // 改了好友、群等内存数据后立即写回文件（消息类记录本来就是即时追加的）
 
     void onConnection(const TcpConnection::Ptr& connection);
     void onMessage(const TcpConnection::Ptr& connection, Buffer& buffer);

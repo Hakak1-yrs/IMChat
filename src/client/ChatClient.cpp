@@ -182,6 +182,7 @@ void ChatClient::handle(const Packet& packet) {
     }
     case MessageType::PRESENCE:
     case MessageType::MSG_REVOKED:
+    case MessageType::DATA_CHANGED:
         if (callbacks_.onPush) callbacks_.onPush(packet.type, packet.body);
         return;
     case MessageType::ERROR_RESP:

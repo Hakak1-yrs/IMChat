@@ -377,11 +377,30 @@ TEST_F(ChatServerTest, ReadReceiptReachesSenderAndClearsUnread) {
 
 namespace {
 
-// 发一个通用请求，返回 CALL_RESP 的正文
+// 发一个通用请求，返回 CALL_RESP 的正文。等待期间到达的推送（如 DATA_CHANGED）放进 pushes
+std::vector<Packet> pushes;
 json call(TestClient& client, const std::string& op, const json& args = json::object()) {
     client.send(MessageType::CALL_REQ, { { "reqId", 77 }, { "op", op }, { "args", args } });
-    std::optional<Packet> response = client.receive();
-    return response && response->type == MessageType::CALL_RESP ? response->body : json();
+    while (std::optional<Packet> response = client.receive()) {
+        if (response->type == MessageType::CALL_RESP) return response->body;
+        pushes.push_back(*response);
+    }
+    return json();
+}
+
+// 等一条指定类型的推送（之前在 call 里顺带收到的也算）
+std::optional<Packet> waitPush(TestClient& client, MessageType type) {
+    for (auto it = pushes.begin(); it != pushes.end(); ++it) {
+        if (it->type == type) {
+            Packet packet = *it;
+            pushes.erase(it);
+            return packet;
+        }
+    }
+    while (std::optional<Packet> packet = client.receive()) {
+        if (packet->type == type) return packet;
+    }
+    return std::nullopt;
 }
 
 const json* findById(const json& list, const std::string& key, const json& value) {
@@ -526,4 +545,95 @@ TEST_F(ChatServerTest, UnknownCallOperationIsRejected) {
     ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
     json response = call(zhang, "no.such.op");
     EXPECT_EQ(response["ok"], false);
+}
+
+TEST_F(ChatServerTest, FriendRequestNeedsVerificationThenBothSidesBecomeFriends) {
+    // 赵六六（10004）和孙小七（10005）还不是好友；默认开启好友验证
+    startServer();
+    pushes.clear();
+    TestClient zhao(port_), sun(port_);
+    ASSERT_EQ(zhao.login("QQ", "10004")["ok"], true);
+    ASSERT_EQ(sun.login("QQ", "10005")["ok"], true);
+    json sent = call(zhao, "friends.request", { { "target", "10005" }, { "greeting", "我是六六" }, { "remark", "七七" } });
+    ASSERT_EQ(sent["ok"], true);
+    EXPECT_EQ(sent["data"]["becameFriends"], false);
+
+    std::optional<Packet> changed = waitPush(sun, MessageType::DATA_CHANGED);   // 对方收到通知，去取申请列表
+    ASSERT_TRUE(changed);
+    json social = call(sun, "social.get");
+    ASSERT_EQ(social["ok"], true);
+    const json& request = social["data"]["requests"][0];
+    EXPECT_EQ(request["from"], "10004");
+    EXPECT_EQ(request["greeting"], "我是六六");
+    EXPECT_EQ(request["status"], "pending");
+    EXPECT_EQ(social["data"]["verify"], true);
+
+    json accepted = call(sun, "friends.respond", { { "seq", request["seq"] }, { "accept", true }, { "remark", "六六" } });
+    ASSERT_EQ(accepted["ok"], true);
+    ASSERT_TRUE(waitPush(zhao, MessageType::DATA_CHANGED));
+    const json zhaoFriends = call(zhao, "contacts.list")["data"]["friends"];
+    const json* seven = findById(zhaoFriends, "id", "10005");
+    ASSERT_TRUE(seven);
+    EXPECT_EQ((*seven)["remark"], "七七");
+    EXPECT_EQ(call(sun, "friends.respond", { { "seq", request["seq"] }, { "accept", true } })["ok"], false);   // 不能重复处理
+
+    // 立即保存：服务端重启后仍然是好友
+    server_.reset();
+    startServer();
+    TestClient again(port_);
+    ASSERT_EQ(again.login("QQ", "10005")["ok"], true);
+    const json sunFriends = call(again, "contacts.list")["data"]["friends"];
+    const json* six = findById(sunFriends, "id", "10004");
+    ASSERT_TRUE(six);
+    EXPECT_EQ((*six)["remark"], "六六");
+}
+
+TEST_F(ChatServerTest, WithoutVerificationRequestAddsFriendDirectly) {
+    startServer();
+    pushes.clear();
+    TestClient zhao(port_), sun(port_);
+    ASSERT_EQ(zhao.login("QQ", "10004")["ok"], true);
+    ASSERT_EQ(sun.login("QQ", "10005")["ok"], true);
+    EXPECT_EQ(call(sun, "settings.verify", { { "on", false } })["data"]["verify"], false);
+    json sent = call(zhao, "friends.request", { { "target", "10005" } });
+    ASSERT_EQ(sent["ok"], true);
+    EXPECT_EQ(sent["data"]["becameFriends"], true);
+    EXPECT_EQ(call(zhao, "friends.request", { { "target", "10004" } })["ok"], false);   // 不能加自己
+    EXPECT_EQ(call(zhao, "friends.request", { { "target", "99999" } })["ok"], false);   // 不存在的账号
+}
+
+TEST_F(ChatServerTest, ProfileRemarkOneWayDeleteAndBlacklist) {
+    startServer();
+    pushes.clear();
+    TestClient zhang(port_), li(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+
+    EXPECT_EQ(call(zhang, "friends.remark", { { "id", "10002" }, { "remark", "四哥" } })["ok"], true);
+    EXPECT_EQ(call(zhang, "friends.remark", { { "id", "10002" }, { "remark", " " } })["ok"], false);   // 备注不能为空
+    json profile = call(zhang, "profile.get", { { "id", "10002" } });
+    ASSERT_EQ(profile["ok"], true);
+    const json& p = profile["data"];
+    EXPECT_EQ(p["exists"], true);
+    EXPECT_EQ(p["remark"], "四哥");
+    EXPECT_EQ(p["isFriend"], true);
+    EXPECT_EQ(p["peerHasMe"], true);
+    EXPECT_EQ(p["online"], true);
+    EXPECT_FALSE(p["info"].empty());   // showInfo() 的输出（多态）
+    EXPECT_EQ(p["mutual"].size(), 1u);
+    EXPECT_EQ(call(zhang, "profile.get", { { "id", "99999" } })["data"]["exists"], false);
+
+    // 李四单向删除张三：张三收到通知，资料页显示“对方已把你删除”，张三的列表里李四还在
+    ASSERT_EQ(call(li, "friends.remove", { { "id", "10001" } })["ok"], true);
+    ASSERT_TRUE(waitPush(zhang, MessageType::DATA_CHANGED));
+    json after = call(zhang, "profile.get", { { "id", "10002" } })["data"];
+    EXPECT_EQ(after["isFriend"], true);
+    EXPECT_EQ(after["peerHasMe"], false);
+
+    ASSERT_EQ(call(zhang, "friends.block", { { "id", "10002" }, { "on", true } })["ok"], true);
+    const json blocked = call(zhang, "social.get")["data"]["blocked"];
+    ASSERT_EQ(blocked.size(), 1u);
+    EXPECT_EQ(blocked[0]["id"], "10002");
+    EXPECT_EQ(call(zhang, "profile.get", { { "id", "10002" } })["data"]["blocked"], true);
+    EXPECT_EQ(call(zhang, "friends.block", { { "id", "10002" }, { "on", true } })["ok"], false);   // 已经在黑名单里
 }

@@ -21,6 +21,7 @@ enum class MessageType : std::uint16_t {
     CALL_RESP = 501,      // {reqId, ok, error | data}
     PRESENCE = 510,       // 推送：好友上线 / 下线 {account, online}
     MSG_REVOKED = 511,    // 推送：一条消息被撤回 {seq, revokedBy}
+    DATA_CHANGED = 512,   // 推送：与我有关的数据变了，需要重新获取 {topics: ["contacts", "social"]}
     ERROR_RESP = 900,     // {reqId?, code, message}
 };
 

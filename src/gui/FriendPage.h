@@ -2,7 +2,8 @@
 #include "Page.h"
 
 // 好友资料（对应控制台“好友管理 → 3. 修改好友备注 / 4. 删除好友 / 8. 查看好友资料（含共同好友）”）：
-// 显示对方资料（虚函数 showInfo()）、我给他的备注、我们在同一服务中的共同好友；可以发消息、修改备注、删除好友
+// 显示对方资料（虚函数 showInfo()）、我给他的备注、我们在同一服务中的共同好友；可以发消息、修改备注、删除好友、拉黑。
+// 只通过 Session 接口工作，单机、联网两种模式都能用（联网模式下资料从服务端取回后自动刷新）
 class FriendPage : public Page {
 public:
     FriendPage(GuiWindow& window, const std::string& peerId);

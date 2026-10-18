@@ -40,7 +40,7 @@ public:
         std::function<void(const nlohmann::json& receipt)> onReadReceipt;
         std::function<void(const std::string& reason)> onKicked;        // 账号在别处登录，不再自动重连
         std::function<void(const nlohmann::json& error)> onError;
-        std::function<void(MessageType type, const nlohmann::json& body)> onPush;   // 其他推送：好友上下线、消息被撤回……
+        std::function<void(MessageType type, const nlohmann::json& body)> onPush;   // 其他推送：好友上下线、消息被撤回、数据变化……
     };
     // 通用请求的结果：ok 为 false 时 error 是原因（包括“连接已断开”）
     using CallDone = std::function<void(bool ok, const nlohmann::json& data, const std::string& error)>;
