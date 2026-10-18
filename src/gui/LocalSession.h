@@ -55,6 +55,10 @@ public:
     void setRemark(const std::string& id, const std::string& remark, Done done) override;
     void setBlocked(const std::string& id, bool on, Done done) override;
     void setVerification(bool on, Done done) override;
+    std::vector<GroupBrief> allGroups() const override;
+    std::optional<GroupInfo> groupInfo(int groupNo) const override;
+    void createGroup(const std::string& name, Created done) override;
+    void groupCommand(const GroupCommand& command, Done done) override;
     bool changed() override;
     std::string takeNotice() override;
     int pendingFriendRequests() const override;

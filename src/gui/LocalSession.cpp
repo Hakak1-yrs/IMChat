@@ -342,6 +342,22 @@ void LocalSession::setVerification(bool on, Done done) {
     done(true, on ? "已开启好友验证" : "已关闭好友验证");
 }
 
+std::vector<GroupBrief> LocalSession::allGroups() const { return GroupService::list(platform_, *current_); }
+
+std::optional<GroupInfo> LocalSession::groupInfo(int groupNo) const { return GroupService::describe(platform_, *current_, groupNo); }
+
+void LocalSession::createGroup(const std::string& name, Created done) {
+    std::string msg;
+    const int groupNo = GroupService::create(platform_, *current_, name, msg);
+    done(groupNo != 0, msg, groupNo);
+}
+
+void LocalSession::groupCommand(const GroupCommand& command, Done done) {
+    std::string msg;
+    const bool ok = GroupService::execute(platform_, *current_, command, msg);
+    done(ok, msg);
+}
+
 std::string LocalSession::nicknameOf(const std::string& id) const {
     ServiceBase* account = platform_.findAccount(current_->type(), id);
     return account ? account->nickname() : id;

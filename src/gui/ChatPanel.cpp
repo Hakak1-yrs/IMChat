@@ -288,12 +288,12 @@ void ChatPanel::onWheel(float x, float y, float delta) {
 float ChatPanel::contentRight() const { return drawer_ ? bounds_.right - kDrawerWidth : bounds_.right; }
 
 std::vector<int> ChatPanel::headerActions() const {
-    // 实时群聊室、群设置直接操作本地业务数据，联网模式下暂不提供；好友资料页两种模式都能用
+    // 实时群聊室基于本机的 TCP 群聊服务，联网模式下不提供；群设置、好友资料页两种模式都能用
     const bool local = !window_.session().isRemote();
     std::vector<int> actions;
     if (conversation_.isGroup && local) actions.push_back(ACT_ROOM);
     actions.push_back(ACT_SEARCH);
-    if (local || !conversation_.isGroup) actions.push_back(ACT_SETTINGS);
+    actions.push_back(ACT_SETTINGS);
     actions.push_back(ACT_INFO);
     return actions;
 }

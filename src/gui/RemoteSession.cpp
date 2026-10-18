@@ -28,6 +28,59 @@ std::string nowText() {
 
 bool countsAsUnread(const Message& m, const std::string& me) { return m.sender() != me && !m.isSystem() && !m.revoked(); }
 
+GroupMemberInfo memberFrom(const json& item) {
+    GroupMemberInfo m;
+    m.id = item.value("id", "");
+    m.nickname = item.value("nickname", m.id);
+    m.owner = item.value("owner", false);
+    m.admin = item.value("admin", false);
+    m.muted = item.value("muted", false);
+    m.canSetAdmin = item.value("canSetAdmin", false);
+    m.canMute = item.value("canMute", false);
+    m.canTransfer = item.value("canTransfer", false);
+    m.canKick = item.value("canKick", false);
+    return m;
+}
+
+GroupInfo groupInfoFrom(const json& data) {
+    GroupInfo g;
+    g.groupNo = data.value("groupNo", 0);
+    g.exists = data.value("exists", false);
+    if (!g.exists) return g;
+    g.name = data.value("name", "");
+    g.mode = data.value("mode", "");
+    g.modeName = data.value("modeName", "");
+    g.owner = data.value("owner", "");
+    g.notice = data.value("notice", "");
+    g.preset = data.value("preset", false);
+    g.features = data.value("features", std::vector<std::string>());
+    for (const json& item : data.value("members", json::array())) g.members.push_back(memberFrom(item));
+    for (const json& item : data.value("pending", json::array())) g.pending.push_back(memberFrom(item));
+    for (const json& item : data.value("subGroups", json::array())) {
+        SubGroupInfo s;
+        s.name = item.value("name", "");
+        s.creator = item.value("creator", "");
+        s.members = item.value("members", std::vector<std::string>());
+        s.canAdd = item.value("canAdd", false);
+        s.canDissolve = item.value("canDissolve", false);
+        g.subGroups.push_back(s);
+    }
+    g.frozenAdmins = data.value("frozenAdmins", 0);
+    g.frozenMuted = data.value("frozenMuted", 0);
+    g.member = data.value("member", false);
+    g.isOwner = data.value("isOwner", false);
+    g.isAdmin = data.value("isAdmin", false);
+    g.applied = data.value("applied", false);
+    g.canEditInfo = data.value("canEditInfo", false);
+    g.allowApplyJoin = data.value("allowApplyJoin", false);
+    g.allowSubGroup = data.value("allowSubGroup", false);
+    g.allowAdmin = data.value("allowAdmin", false);
+    g.allowMute = data.value("allowMute", false);
+    g.canApprove = data.value("canApprove", false);
+    g.canDissolve = data.value("canDissolve", false);
+    return g;
+}
+
 }  // namespace
 
 RemoteSession::RemoteSession(std::string host, std::uint16_t port) : host_(std::move(host)), port_(port) {}
@@ -135,7 +188,10 @@ void RemoteSession::loadLists() {
     fetch("groups.list", json::object(), [this](const json& d) { applyGroups(d); }, true);
     fetch("reads.get", json::object(), [this](const json& d) { applyReads(d); }, true);
     fetch("social.get", json::object(), [this](const json& d) { applySocial(d); }, true);
-    for (const auto& entry : profiles_) loadProfile(entry.first);   // 断线重连后，打开过的资料也刷新一遍
+    // 断线重连后，打开过的资料、群详情、全部群也刷新一遍
+    for (const auto& entry : profiles_) loadProfile(entry.first);
+    for (const auto& entry : groupInfos_) loadGroup(entry.first);
+    if (allGroupsWanted_) loadAllGroups();
 }
 
 void RemoteSession::listLoaded() {
@@ -158,6 +214,10 @@ void RemoteSession::reload(const std::string& topic) {
         for (const auto& entry : profiles_) loadProfile(entry.first);   // 好友关系变了，资料页上的“是否好友”等也要更新
     } else if (topic == "social") {
         fetch("social.get", json::object(), [this](const json& d) { applySocial(d); }, false);
+    } else if (topic == "groups") {   // 群成员、权限、群名……变了：我的群列表、打开过的群详情、全部群都重新取
+        fetch("groups.list", json::object(), [this](const json& d) { applyGroups(d); }, false);
+        for (const auto& entry : groupInfos_) loadGroup(entry.first);
+        if (allGroupsWanted_) loadAllGroups();
     }
 }
 
@@ -572,6 +632,58 @@ void RemoteSession::setBlocked(const std::string& id, bool on, Done done) {
 
 void RemoteSession::setVerification(bool on, Done done) {
     mutate("settings.verify", json{ { "on", on } }, { "social" }, "", std::move(done));
+}
+
+std::vector<GroupBrief> RemoteSession::allGroups() const { return allGroups_; }
+
+std::optional<GroupInfo> RemoteSession::groupInfo(int groupNo) const {
+    auto it = groupInfos_.find(groupNo);
+    if (it == groupInfos_.end()) return std::nullopt;
+    return it->second;
+}
+
+void RemoteSession::loadAllGroups() {
+    allGroupsWanted_ = true;   // 以后群有变化时也刷新它
+    fetch("groups.all", json::object(), [this](const json& data) {
+        allGroups_.clear();
+        for (const json& item : data.value("groups", json::array())) {
+            GroupBrief g;
+            g.groupNo = item.value("groupNo", 0);
+            g.name = item.value("name", "");
+            g.modeName = item.value("modeName", "");
+            g.owner = item.value("owner", "");
+            g.ownerName = item.value("ownerName", "");
+            g.memberCount = item.value("memberCount", 0);
+            g.joined = item.value("joined", false);
+            g.applied = item.value("applied", false);
+            g.allowApplyJoin = item.value("allowApplyJoin", false);
+            allGroups_.push_back(g);
+        }
+    }, false);
+}
+
+void RemoteSession::loadGroup(int groupNo) {
+    fetch("group.get", json{ { "groupNo", groupNo } }, [this](const json& data) {
+        GroupInfo g = groupInfoFrom(data);
+        for (const GroupMemberInfo& m : g.members) nicknames_[m.id] = m.nickname;
+        for (const GroupMemberInfo& m : g.pending) nicknames_[m.id] = m.nickname;
+        groupInfos_[g.groupNo] = std::move(g);
+    }, false);
+}
+
+void RemoteSession::createGroup(const std::string& name, Created done) {
+    client_->call("group.create", json{ { "name", name } }, [this, done](bool ok, const json& data, const std::string& error) {
+        post([this, done, ok, data, error] {
+            if (ok) reload("groups");
+            if (done) done(ok, ok ? data.value("message", "") : error, ok ? data.value("groupNo", 0) : 0);
+        });
+    });
+}
+
+void RemoteSession::groupCommand(const GroupCommand& command, Done done) {
+    const json args = { { "kind", GroupCommand::kindName(command.kind) }, { "groupNo", command.groupNo }, { "target", command.target },
+                        { "text", command.text }, { "on", command.on }, { "members", command.members } };
+    mutate("group.exec", args, { "groups" }, "", std::move(done));
 }
 
 std::string RemoteSession::nicknameOf(const std::string& id) const {

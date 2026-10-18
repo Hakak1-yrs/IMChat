@@ -66,20 +66,7 @@ std::wstring GuiText::chatTime(const std::string& time) {
     return buf;
 }
 
-std::vector<std::string> GuiText::capture(const std::function<void()>& action) {
-    std::ostringstream buffer;
-    std::streambuf* old = std::cout.rdbuf(buffer.rdbuf());
-    action();
-    std::cout.rdbuf(old);
-    std::vector<std::string> lines;
-    std::istringstream in(buffer.str());
-    std::string line;
-    while (std::getline(in, line)) {
-        line = Util::trim(line);
-        if (!line.empty()) lines.push_back(line);
-    }
-    return lines;
-}
+std::vector<std::string> GuiText::capture(const std::function<void()>& action) { return Util::captureLines(action); }
 
 long long GuiText::minutes(const std::string& time) {
     int y, mo, d, h, mi;

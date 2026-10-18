@@ -91,7 +91,7 @@ D2D1_RECT_F MainView::chatArea() const {
 float MainView::stripHeight() const {
     if (tab_ == TAB_CHATS) return 0.0f;
     if (tab_ == TAB_CONTACTS) return kStripHeight + kItemHeight;   // 按钮条 + “新的朋友”
-    return window_.session().isRemote() ? 0.0f : kStripHeight;     // 建群、全部群暂时只在单机模式下有
+    return kStripHeight;                                           // 新建群、全部群
 }
 
 bool MainView::showingPage() const { return pages_.page() != nullptr; }
@@ -526,12 +526,12 @@ void MainView::paintList(Canvas& c) {
     const D2D1_RECT_F body = listBody();
     c.pushClip(body);
     float y = body.top + 4 - listScroll_;
-    if (tab_ == TAB_CONTACTS || (tab_ == TAB_GROUPS && local)) {   // 操作按钮条：添加好友 / 跨服务推荐；新建群 / 全部群
+    if (tab_ != TAB_CHATS) {   // 操作按钮条：添加好友 / 跨服务推荐；新建群 / 全部群
         const std::wstring labels[2] = { tab_ == TAB_CONTACTS ? L"＋ 添加好友" : L"＋ 新建群",
                                          tab_ == TAB_CONTACTS ? L"跨服务推荐" : L"全部群" };
         const int ids[2] = { tab_ == TAB_CONTACTS ? STRIP_ADD_FRIEND : STRIP_NEW_GROUP, tab_ == TAB_CONTACTS ? STRIP_CROSS : STRIP_SQUARE };
-        const int count = local ? 2 : 1;   // 跨服务推荐要用到本人的多个服务账号，联网模式暂不提供
-        const float width = local ? (body.right - body.left - 32 - 8) / 2 : body.right - body.left - 32;
+        const int count = local || tab_ == TAB_GROUPS ? 2 : 1;   // 跨服务推荐要用到本人的多个服务账号，联网模式暂不提供
+        const float width = count == 2 ? (body.right - body.left - 32 - 8) / 2 : body.right - body.left - 32;
         for (int i = 0; i < count; ++i) {
             const D2D1_RECT_F b = D2D1::RectF(body.left + 16 + (width + 8) * i, y + 2, body.left + 16 + (width + 8) * i + width, y + 34);
             D2D1_COLOR_F tint = accent;

@@ -47,7 +47,7 @@
 | `CALL_RESP` | 501 | S → C | 成功：`{reqId, ok: true, data}`；失败：`{reqId, ok: false, error}` |
 | `PRESENCE` | 510 | S → C | `{account, online}`：好友上线 / 下线 |
 | `MSG_REVOKED` | 511 | S → C | `{seq, revokedBy}`：会话里的一条消息被撤回 |
-| `DATA_CHANGED` | 512 | S → C | `{topics: ["contacts", "social"]}`：别人的操作影响了我（如通过了我的好友申请），重新获取对应数据 |
+| `DATA_CHANGED` | 512 | S → C | `{topics: ["contacts", "social", "groups"]}`：别人的操作影响了我（如通过了我的好友申请、把我拉进群），重新获取对应数据 |
 | `ERROR_RESP` | 900 | S → C | `{reqId?, code, message}` |
 
 `LOGIN_RESP` 成功时还带有 `location`（所在地）和 `momentsName`（QQ空间 / 朋友圈……）。
@@ -71,7 +71,42 @@
 | `friends.block` | `{id, on}` | `{message}` |
 | `settings.verify` | `{on}` | `{verify, message}` |
 
-修改好友关系、备注的操作，服务端会立即把数据文件写回磁盘；消息类记录（好友申请、拉黑等）本来就是即时追加写入的。
+| `groups.all` | — | `{groups: [{groupNo, name, modeName, owner, ownerName, memberCount, joined, applied, allowApplyJoin}]}`：本服务的全部群 |
+| `group.get` | `{groupNo}` | 群详情（见下）；群不存在时 `{exists: false, groupNo}` |
+| `group.create` | `{name}` | `{groupNo, message}` |
+| `group.exec` | `{kind, groupNo, target, text, on, members}` | `{message}`：群管理命令，`kind` 见下表 |
+
+修改好友关系、备注、群数据的操作，服务端会立即把数据文件写回磁盘；消息类记录（好友申请、拉黑等）本来就是即时追加写入的。
+
+#### 群管理命令（`group.exec`）
+
+群操作封装成命令对象 `GroupCommand`（命令模式）。单机模式下图形界面直接交给 `GroupService::execute` 执行；联网模式下客户端把同一个对象序列化成下表的参数发给服务端，服务端调用同一个函数。群管理规则只有一份，两种模式的行为一致。
+
+| `kind` | 含义 | 用到的参数 |
+|---|---|---|
+| `join` | 申请加入（无主群直接认领） | — |
+| `approve` | 审批入群申请 | `target` 申请人，`on` 同意/拒绝 |
+| `invite` | 推荐好友入群（只能推荐自己的好友） | `target` |
+| `quit` | 退群 | — |
+| `kick` | 踢出成员 | `target` |
+| `admin` | 设置/取消管理员 | `target`，`on` |
+| `mute` | 禁言/解除禁言 | `target`，`on` |
+| `transfer` | 转让群主 | `target` |
+| `rename` | 修改群名 | `text` |
+| `notice` | 发布公告（同时发一条群消息）；`text` 为空表示清除 | `text` |
+| `mode` | 切换管理模式；`message` 有多行：结果、切换前后的数据比对、新模式的特色 | `text`：`"QQ"` / `"WECHAT"` |
+| `subNew` | 新建讨论组 | `text` 名称，`members` |
+| `subAdd` | 讨论组拉人 | `target` 讨论组名称，`members` |
+| `subDissolve` | 解散讨论组 | `target` 讨论组名称 |
+| `dissolve` | 解散群 | — |
+
+权限全部由服务端按群当前的管理策略检查，客户端伪造请求也无法越权。命令执行成功后：
+1. 操作产生的群消息（如"A 邀请 B 加入了群聊"、群公告）以 `MSG_PUSH` 推给全体在线成员，包括操作者本人；
+2. 操作前后的成员、入群申请人、被操作的人（被踢、被拒绝的人也在内）收到 `DATA_CHANGED {topics: ["groups"]}`，重新获取群列表和打开着的群详情。
+
+#### 群详情（`group.get` 的 `data`）
+
+群资料 `{groupNo, name, mode, modeName, owner, notice, preset, features}`，成员 `members` 和入群申请 `pending`（每项 `{id, nickname, owner, admin, muted, canSetAdmin, canMute, canTransfer, canKick}`），讨论组 `subGroups`（`{name, creator, members, canAdd, canDissolve}`），以及查看者的身份和权限 `{member, isOwner, isAdmin, applied, canEditInfo, allowApplyJoin, allowSubGroup, allowAdmin, allowMute, canApprove, canDissolve}`。当前模式下不生效、但保留着的管理员和禁言记录数放在 `frozenAdmins`、`frozenMuted`。
 
 `groups.list` 里的 `canSpeak`（我能否发言）、`canMentionAll`（我能否 @所有人）、`revocable`（我能撤回哪些成员的消息），都由服务端按群当前的管理策略算好。客户端直接使用，不必重复实现权限规则，也就不会出现两边规则不一致的问题。
 

@@ -637,3 +637,151 @@ TEST_F(ChatServerTest, ProfileRemarkOneWayDeleteAndBlacklist) {
     EXPECT_EQ(call(zhang, "profile.get", { { "id", "10002" } })["data"]["blocked"], true);
     EXPECT_EQ(call(zhang, "friends.block", { { "id", "10002" }, { "on", true } })["ok"], false);   // 已经在黑名单里
 }
+// ======================== 群管理 ========================
+
+TEST_F(ChatServerTest, GroupDetailCarriesViewerPermissionsComputedByPolicy) {
+    startServer();
+    pushes.clear();
+    TestClient li(port_), sun(port_);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);    // 群 1001 的管理员
+    ASSERT_EQ(sun.login("QQ", "10005")["ok"], true);   // 群 1001 的入群申请人
+    json detail = call(li, "group.get", { { "groupNo", 1001 } });
+    ASSERT_EQ(detail["ok"], true);
+    const json& g = detail["data"];
+    EXPECT_EQ(g["exists"], true);
+    EXPECT_EQ(g["member"], true);
+    EXPECT_EQ(g["isAdmin"], true);
+    EXPECT_EQ(g["canEditInfo"], true);
+    EXPECT_EQ(g["canApprove"], true);
+    EXPECT_EQ(g["canDissolve"], false);   // 不是群主；1001 还是预置群
+    EXPECT_FALSE(g["features"].empty());   // 当前策略 showFeatures() 的输出
+    ASSERT_EQ(g["pending"].size(), 1u);
+    EXPECT_EQ(g["pending"][0]["id"], "10005");
+    const json* wang = findById(g["members"], "id", "10003");
+    const json* owner = findById(g["members"], "id", "10001");
+    ASSERT_TRUE(wang && owner);
+    EXPECT_EQ((*wang)["canMute"], true);       // 管理员可以禁言、踢出普通成员
+    EXPECT_EQ((*wang)["canKick"], true);
+    EXPECT_EQ((*wang)["canSetAdmin"], false);  // 只有群主能设管理员
+    EXPECT_EQ((*owner)["canKick"], false);     // 不能动群主
+    EXPECT_EQ((*owner)["owner"], true);
+
+    const json outsider = call(sun, "group.get", { { "groupNo", 1001 } })["data"];
+    EXPECT_EQ(outsider["member"], false);
+    EXPECT_EQ(outsider["applied"], true);
+    EXPECT_EQ(call(sun, "group.get", { { "groupNo", 4242 } })["data"]["exists"], false);
+
+    const json all = call(sun, "groups.all")["data"]["groups"];
+    EXPECT_EQ(all.size(), 6u);   // QQ 服务的 6 个预置群
+    const json* g1001 = findById(all, "groupNo", 1001);
+    ASSERT_TRUE(g1001);
+    EXPECT_EQ((*g1001)["joined"], false);
+    EXPECT_EQ((*g1001)["applied"], true);
+    EXPECT_EQ((*g1001)["memberCount"], 4);
+}
+
+TEST_F(ChatServerTest, ApprovingJoinPushesSystemTipAndNotifiesEveryone) {
+    startServer();
+    pushes.clear();
+    TestClient li(port_), sun(port_);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    ASSERT_EQ(sun.login("QQ", "10005")["ok"], true);
+    json approved = call(li, "group.exec", { { "kind", "approve" }, { "groupNo", 1001 }, { "target", "10005" }, { "on", true } });
+    ASSERT_EQ(approved["ok"], true);
+    EXPECT_FALSE(approved["data"]["message"].get<std::string>().empty());
+    std::optional<Packet> tip = waitPush(li, MessageType::MSG_PUSH);   // 操作者自己也收到系统提示（不是他发的消息）
+    ASSERT_TRUE(tip);
+    EXPECT_EQ(tip->body["system"], true);
+    EXPECT_EQ(tip->body["groupNo"], 1001);
+
+    // 申请人：先收到新成员能看到的系统提示，再收到“群数据变了”的通知
+    std::optional<Packet> sunTip = waitPush(sun, MessageType::MSG_PUSH);
+    ASSERT_TRUE(sunTip);
+    EXPECT_EQ(sunTip->body["seq"], tip->body["seq"]);
+    std::optional<Packet> changed = waitPush(sun, MessageType::DATA_CHANGED);
+    ASSERT_TRUE(changed);
+    EXPECT_EQ(changed->body["topics"], json::array({ "groups" }));
+    const json sunGroups = call(sun, "groups.list")["data"]["groups"];
+    EXPECT_TRUE(findById(sunGroups, "groupNo", 1001));
+    EXPECT_EQ(call(li, "group.exec", { { "kind", "approve" }, { "groupNo", 1001 }, { "target", "10005" } })["ok"], false);   // 已经处理过
+}
+
+TEST_F(ChatServerTest, GroupCommandsAreCheckedByPolicyOnTheServer) {
+    startServer();
+    pushes.clear();
+    TestClient wang(port_), zhang(port_);
+    ASSERT_EQ(wang.login("QQ", "10003")["ok"], true);   // 普通成员
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);  // 群主
+    // 普通成员没有这些权限：请求即使是伪造的，服务端也会拒绝
+    EXPECT_EQ(call(wang, "group.exec", { { "kind", "kick" }, { "groupNo", 1001 }, { "target", "10004" } })["ok"], false);
+    EXPECT_EQ(call(wang, "group.exec", { { "kind", "rename" }, { "groupNo", 1001 }, { "text", "随便改" } })["ok"], false);
+    EXPECT_EQ(call(wang, "group.exec", { { "kind", "mode" }, { "groupNo", 1001 }, { "text", "WECHAT" } })["ok"], false);
+    EXPECT_EQ(call(zhang, "group.exec", { { "kind", "invite" }, { "groupNo", 1003 }, { "target", "10005" } })["ok"], false);   // 不是该群成员
+    EXPECT_EQ(call(zhang, "group.exec", { { "kind", "invite" }, { "groupNo", 1001 }, { "target", "99999" } })["ok"], false);   // 不是好友
+    EXPECT_EQ(call(zhang, "group.exec", { { "kind", "nuke" }, { "groupNo", 1001 } })["ok"], false);                          // 未知命令
+    // 参数类型不对：返回失败，连接和服务端都不受影响
+    json bad = call(zhang, "group.exec", { { "kind", "admin" }, { "groupNo", 1001 }, { "target", "10003" }, { "on", "yes" } });
+    EXPECT_EQ(bad["ok"], false);
+    EXPECT_EQ(call(zhang, "groups.list")["ok"], true);
+
+    // 群主踢出王五：王五收到通知，群列表里不再有这个群
+    ASSERT_EQ(call(zhang, "group.exec", { { "kind", "kick" }, { "groupNo", 1001 }, { "target", "10003" } })["ok"], true);
+    ASSERT_TRUE(waitPush(wang, MessageType::DATA_CHANGED));
+    EXPECT_FALSE(findById(call(wang, "groups.list")["data"]["groups"], "groupNo", 1001));
+}
+
+TEST_F(ChatServerTest, SwitchingModeKeepsMemberDataAndSurvivesRestart) {
+    startServer();
+    pushes.clear();
+    {
+        TestClient zhang(port_);
+        ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+        json switched = call(zhang, "group.exec", { { "kind", "mode" }, { "groupNo", 1001 }, { "text", "WECHAT" } });
+        ASSERT_EQ(switched["ok"], true);
+        EXPECT_NE(switched["data"]["message"].get<std::string>().find("完全一致"), std::string::npos);
+        const json g = call(zhang, "group.get", { { "groupNo", 1001 } })["data"];
+        EXPECT_EQ(g["mode"], "WECHAT");
+        EXPECT_EQ(g["allowAdmin"], false);
+        EXPECT_EQ(g["frozenAdmins"], 1);   // 李四的管理员身份保留着，只是当前模式下不生效
+        ASSERT_EQ(call(zhang, "group.exec", { { "kind", "notice" }, { "groupNo", 1001 }, { "text", "周五交课设" } })["ok"], true);
+        std::optional<Packet> notice = waitPush(zhang, MessageType::MSG_PUSH);   // 公告同时作为一条群消息发出
+        while (notice && notice->body.value("system", false)) notice = waitPush(zhang, MessageType::MSG_PUSH);
+        ASSERT_TRUE(notice);
+        EXPECT_EQ(notice->body["text"], "【群公告】周五交课设");
+    }
+    server_.reset();   // 改完立即保存：重启后模式、公告都还在
+    startServer();
+    TestClient again(port_);
+    ASSERT_EQ(again.login("QQ", "10002")["ok"], true);
+    const json g = call(again, "group.get", { { "groupNo", 1001 } })["data"];
+    EXPECT_EQ(g["mode"], "WECHAT");
+    EXPECT_EQ(g["notice"], "周五交课设");
+    EXPECT_EQ(g["isAdmin"], false);
+    EXPECT_EQ(g["members"].size(), 4u);
+}
+
+TEST_F(ChatServerTest, CreateAndDissolveGroup) {
+    startServer();
+    pushes.clear();
+    TestClient zhang(port_), li(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    EXPECT_EQ(call(zhang, "group.create", { { "name", " " } })["ok"], false);
+    json created = call(zhang, "group.create", { { "name", "周末爬山" } });
+    ASSERT_EQ(created["ok"], true);
+    const int groupNo = created["data"]["groupNo"].get<int>();
+    EXPECT_GE(groupNo, 1007);
+    std::optional<Packet> tip = waitPush(zhang, MessageType::MSG_PUSH);   // “张三 创建了群聊”
+    ASSERT_TRUE(tip);
+    EXPECT_EQ(tip->body["groupNo"], groupNo);
+
+    ASSERT_EQ(call(zhang, "group.exec", { { "kind", "invite" }, { "groupNo", groupNo }, { "target", "10002" } })["ok"], true);
+    ASSERT_TRUE(waitPush(li, MessageType::DATA_CHANGED));
+    EXPECT_TRUE(findById(call(li, "groups.list")["data"]["groups"], "groupNo", groupNo));
+    EXPECT_EQ(call(li, "group.exec", { { "kind", "dissolve" }, { "groupNo", groupNo } })["ok"], false);   // 只有群主能解散
+
+    ASSERT_EQ(call(zhang, "group.exec", { { "kind", "dissolve" }, { "groupNo", groupNo } })["ok"], true);
+    ASSERT_TRUE(waitPush(li, MessageType::DATA_CHANGED));
+    EXPECT_EQ(call(li, "group.get", { { "groupNo", groupNo } })["data"]["exists"], false);
+    EXPECT_EQ(call(zhang, "group.exec", { { "kind", "dissolve" }, { "groupNo", 1001 } })["ok"], false);   // 预置群不能解散
+}

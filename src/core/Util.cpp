@@ -62,6 +62,20 @@ std::string Util::trim(const std::string& s) {
     return s.substr(begin, end - begin + 1);
 }
 
+std::vector<std::string> Util::captureLines(const std::function<void()>& action) {
+    std::ostringstream buffer;
+    std::streambuf* old = std::cout.rdbuf(buffer.rdbuf());
+    action();
+    std::cout.rdbuf(old);
+    std::vector<std::string> lines;
+    std::istringstream in(buffer.str());
+    for (std::string line; std::getline(in, line);) {
+        line = trim(line);
+        if (!line.empty()) lines.push_back(line);
+    }
+    return lines;
+}
+
 bool Util::contains(const std::vector<std::string>& v, const std::string& x) {
     return std::find(v.begin(), v.end(), x) != v.end();
 }

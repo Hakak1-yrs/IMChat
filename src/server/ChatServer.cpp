@@ -1,11 +1,11 @@
 #include "ChatServer.h"
 #include <cstdlib>
-#include <iostream>
 #include <optional>
-#include <sstream>
+#include <set>
 #include <vector>
 #include "Group.h"
 #include "GroupPolicy.h"
+#include "GroupService.h"
 #include "Log.h"
 #include "Platform.h"
 #include "ServiceType.h"
@@ -40,6 +40,48 @@ std::optional<Message> lastFrom(const std::vector<Message>& history, const std::
         if (it->sender() == sender) return *it;
     }
     return std::nullopt;
+}
+
+json memberJson(const GroupMemberInfo& m) {
+    return json{ { "id", m.id },         { "nickname", m.nickname },       { "owner", m.owner },
+                 { "admin", m.admin },   { "muted", m.muted },             { "canSetAdmin", m.canSetAdmin },
+                 { "canMute", m.canMute }, { "canTransfer", m.canTransfer }, { "canKick", m.canKick } };
+}
+
+json groupInfoJson(const GroupInfo& g) {
+    if (!g.exists) return json{ { "exists", false }, { "groupNo", g.groupNo } };
+    json members = json::array(), pending = json::array(), subGroups = json::array();
+    for (const GroupMemberInfo& m : g.members) members.push_back(memberJson(m));
+    for (const GroupMemberInfo& m : g.pending) pending.push_back(memberJson(m));
+    for (const SubGroupInfo& s : g.subGroups) {
+        subGroups.push_back({ { "name", s.name }, { "creator", s.creator }, { "members", s.members },
+                              { "canAdd", s.canAdd }, { "canDissolve", s.canDissolve } });
+    }
+    return json{ { "exists", true },
+                 { "groupNo", g.groupNo },
+                 { "name", g.name },
+                 { "mode", g.mode },
+                 { "modeName", g.modeName },
+                 { "owner", g.owner },
+                 { "notice", g.notice },
+                 { "preset", g.preset },
+                 { "features", g.features },
+                 { "members", std::move(members) },
+                 { "pending", std::move(pending) },
+                 { "subGroups", std::move(subGroups) },
+                 { "frozenAdmins", g.frozenAdmins },
+                 { "frozenMuted", g.frozenMuted },
+                 { "member", g.member },
+                 { "isOwner", g.isOwner },
+                 { "isAdmin", g.isAdmin },
+                 { "applied", g.applied },
+                 { "canEditInfo", g.canEditInfo },
+                 { "allowApplyJoin", g.allowApplyJoin },
+                 { "allowSubGroup", g.allowSubGroup },
+                 { "allowAdmin", g.allowAdmin },
+                 { "allowMute", g.allowMute },
+                 { "canApprove", g.canApprove },
+                 { "canDissolve", g.canDissolve } };
 }
 
 }  // namespace
@@ -327,6 +369,78 @@ void ChatServer::registerApi() {
     api_["friends.remark"] = [this](Session&, ServiceBase& me, const json& args) { return setRemark(me, args); };
     api_["friends.block"] = [this](Session&, ServiceBase& me, const json& args) { return setBlocked(me, args); };
     api_["settings.verify"] = [this](Session&, ServiceBase& me, const json& args) { return setVerification(me, args); };
+    api_["groups.all"] = [this](Session&, ServiceBase& me, const json&) { return groupsAll(me); };
+    api_["group.get"] = [this](Session&, ServiceBase& me, const json& args) {
+        return groupInfoJson(GroupService::describe(platform_, me, static_cast<int>(number(args, "groupNo", 0))));
+    };
+    api_["group.create"] = [this](Session&, ServiceBase& me, const json& args) { return createGroup(me, args); };
+    api_["group.exec"] = [this](Session&, ServiceBase& me, const json& args) { return execGroup(me, args); };
+}
+
+// ---- 群：全部群、群详情、新建、群管理命令 ----
+
+json ChatServer::groupsAll(ServiceBase& me) {
+    json groups = json::array();
+    for (const GroupBrief& g : GroupService::list(platform_, me)) {
+        groups.push_back({ { "groupNo", g.groupNo }, { "name", g.name }, { "modeName", g.modeName }, { "owner", g.owner },
+                           { "ownerName", g.ownerName }, { "memberCount", g.memberCount }, { "joined", g.joined },
+                           { "applied", g.applied }, { "allowApplyJoin", g.allowApplyJoin } });
+    }
+    return json{ { "groups", std::move(groups) } };
+}
+
+json ChatServer::createGroup(ServiceBase& me, const json& args) {
+    std::string msg;
+    const int groupNo = GroupService::create(platform_, me, field(args, "name"), msg);
+    if (groupNo == 0) throw ApiError(msg);
+    persist();
+    afterGroupChange(me, groupNo, {}, 0);   // 推送“某某创建了群聊”
+    return json{ { "groupNo", groupNo }, { "message", msg } };
+}
+
+json ChatServer::execGroup(ServiceBase& me, const json& args) {
+    GroupCommand command;
+    if (!GroupCommand::parseKind(field(args, "kind"), command.kind)) throw ApiError("不支持的群操作：" + field(args, "kind"));
+    command.groupNo = static_cast<int>(number(args, "groupNo", 0));
+    command.target = field(args, "target");
+    command.text = field(args, "text");
+    command.on = args.value("on", true);
+    command.members = args.value("members", std::vector<std::string>());
+
+    // 记下操作前的相关人员和最后一条群消息：被踢、退群、被拒绝的人也要通知；之后新产生的系统提示要推送出去
+    std::set<std::string> affected;
+    int lastSeq = 0;
+    if (const Group* g = platform_.groups().find(me.type(), command.groupNo)) {
+        affected.insert(g->members().begin(), g->members().end());
+        affected.insert(g->pending().begin(), g->pending().end());
+        const std::vector<Message> history = platform_.messages().groupHistory(me.type(), command.groupNo);
+        if (!history.empty()) lastSeq = history.back().seq();
+    }
+    if (!command.target.empty()) affected.insert(command.target);
+    std::string msg;
+    if (!GroupService::execute(platform_, me, command, msg)) throw ApiError(msg);
+    persist();
+    afterGroupChange(me, command.groupNo, std::move(affected), lastSeq);
+    return json{ { "message", msg } };
+}
+
+void ChatServer::afterGroupChange(ServiceBase& me, int groupNo, std::set<std::string> affected, int lastSeq) {
+    const std::string service = ServiceTypeHelper::code(me.type());
+    if (const Group* g = platform_.groups().find(me.type(), groupNo)) {
+        affected.insert(g->members().begin(), g->members().end());
+        affected.insert(g->pending().begin(), g->pending().end());
+        // 操作产生的新群消息（“A 邀请 B 加入了群聊”、群公告……）推给现在的全体在线成员，包括操作者自己：
+        // 这些消息不是他用 SEND_MSG_REQ 发的，不推送他就收不到
+        for (const Message& m : platform_.messages().groupHistory(me.type(), groupNo)) {
+            if (m.seq() <= lastSeq) continue;
+            const json push = messageJson(m);
+            for (const std::string& id : g->members()) pushTo(service + " " + id, MessageType::MSG_PUSH, push);
+        }
+    }
+    // 其他相关的人重新获取群列表和打开着的群资料（操作者自己在收到响应后会重新获取）
+    for (const std::string& id : affected) {
+        if (id != me.id()) notifyChanged(me.type(), id, { "groups" });
+    }
 }
 
 // ---- 好友：申请与验证、删除、备注、黑名单 ----
@@ -352,16 +466,7 @@ json ChatServer::profileGet(ServiceBase& me, const json& args) {
     ServiceBase* other = platform_.findAccount(me.type(), id);
     if (!other) return json{ { "exists", false }, { "id", id } };
     // 多态：showInfo() 按账号的实际类型（QQ、微信……）输出各自的资料，原样转成一行一行的文字
-    std::ostringstream buffer;
-    std::streambuf* original = std::cout.rdbuf(buffer.rdbuf());
-    other->showInfo();
-    std::cout.rdbuf(original);
-    json info = json::array();
-    std::istringstream lines(buffer.str());
-    for (std::string line; std::getline(lines, line);) {
-        line = Util::trim(line);
-        if (!line.empty()) info.push_back(line);
-    }
+    const json info = Util::captureLines([&] { other->showInfo(); });
     json mutual = json::array();
     for (const std::string& m : platform_.mutualFriends(me, *other)) {
         ServiceBase* account = platform_.findAccount(me.type(), m);
@@ -464,6 +569,9 @@ void ChatServer::handleCall(Session& session, const json& request) {
         } catch (const ApiError& e) {
             response["ok"] = false;
             response["error"] = e.what();
+        } catch (const json::exception&) {   // 参数类型不对（比如 on 传了字符串）：不能让一个畸形请求把服务端搞崩
+            response["ok"] = false;
+            response["error"] = "请求参数格式不正确";
         }
     }
     send(session.connection, MessageType::CALL_RESP, response);

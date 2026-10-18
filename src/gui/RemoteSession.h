@@ -64,6 +64,12 @@ public:
     void setRemark(const std::string& id, const std::string& remark, Done done) override;
     void setBlocked(const std::string& id, bool on, Done done) override;
     void setVerification(bool on, Done done) override;
+    std::vector<GroupBrief> allGroups() const override;
+    std::optional<GroupInfo> groupInfo(int groupNo) const override;
+    void loadAllGroups() override;
+    void loadGroup(int groupNo) override;
+    void createGroup(const std::string& name, Created done) override;
+    void groupCommand(const GroupCommand& command, Done done) override;
     int pendingFriendRequests() const override;
     bool changed() override;
     std::string takeNotice() override;
@@ -98,7 +104,7 @@ private:
     void listLoaded();
     // 发一个通用请求，成功后在界面线程里调用 apply；initial 为 true 表示是登录时的首次加载（计入加载进度）
     void fetch(const char* op, nlohmann::json args, std::function<void(const nlohmann::json&)> apply, bool initial);
-    void reload(const std::string& topic);   // 重新取一类数据："contacts" / "social"
+    void reload(const std::string& topic);   // 重新取一类数据："contacts" / "social" / "groups"
     // 修改类请求：成功后重新取 topics 对应的数据（以及 profileId 的资料），再把结果交给 done
     void mutate(const char* op, nlohmann::json args, std::vector<std::string> topics, const std::string& profileId, Done done);
     void applySocial(const nlohmann::json& data);
@@ -139,6 +145,9 @@ private:
     bool verify_ = true;
     std::vector<std::string> blocked_;
     std::map<std::string, ProfileView> profiles_;   // 打开过的资料页从服务端取回的完整资料
+    std::map<int, GroupInfo> groupInfos_;           // 打开过的群设置页从服务端取回的群详情
+    std::vector<GroupBrief> allGroups_;
+    bool allGroupsWanted_ = false;                  // 打开过“全部群”
     bool dirty_ = false;
     std::string notice_;
     std::string status_;

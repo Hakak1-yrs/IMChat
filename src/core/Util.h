@@ -1,5 +1,6 @@
 #pragma once
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,9 @@ public:
     static std::string fieldText(const std::string& s);   // 写文件用：toField，空字符串写作 "-"，保证不会错列
     static std::string lineText(const std::string& s);    // 一行文字（消息、公告）：换行和制表符换成空格，去掉首尾空白
     static bool containsText(const std::string& text, const std::string& keyword);
+    // 执行 action，把它输出到 cout 的内容按行收集（去掉首尾空白和空行）。
+    // 业务类的 show 系列虚函数为控制台而写，图形界面和服务端用它把输出转成数据
+    static std::vector<std::string> captureLines(const std::function<void()>& action);
 
     // ---- 编码 ----
     static std::wstring widen(const std::string& utf8);

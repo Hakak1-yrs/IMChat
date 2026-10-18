@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include "Conversation.h"
+#include "GroupService.h"
 #include "Message.h"
 #include "ServiceType.h"
 
@@ -123,6 +124,15 @@ public:
     virtual void setRemark(const std::string& id, const std::string& remark, Done done) = 0;
     virtual void setBlocked(const std::string& id, bool on, Done done) = 0;
     virtual void setVerification(bool on, Done done) = 0;
+
+    // ---- 群管理：查询群详情、执行群命令（GroupCommand，规则由 GroupService 在本机或服务端执行）----
+    using Created = std::function<void(bool ok, const std::string& message, int groupNo)>;
+    virtual std::vector<GroupBrief> allGroups() const = 0;               // 本服务的全部群
+    virtual std::optional<GroupInfo> groupInfo(int groupNo) const = 0;   // 联网模式下还没取回来时为空
+    virtual void loadAllGroups();             // 联网模式：向服务端取全部群，取回后界面自动刷新
+    virtual void loadGroup(int groupNo);      // 联网模式：向服务端取群详情
+    virtual void createGroup(const std::string& name, Created done) = 0;
+    virtual void groupCommand(const GroupCommand& command, Done done) = 0;
 
     // ---- 刷新与提示 ----
     virtual bool changed() = 0;            // 自上次调用以来是否有新数据（新消息、其他窗口的修改……），有则界面刷新
