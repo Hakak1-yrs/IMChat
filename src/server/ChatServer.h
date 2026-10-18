@@ -80,6 +80,10 @@ private:
     // 群发生变化后：把新产生的群消息（lastSeq 之后的系统提示、公告）推给在线成员，
     // 再通知 affected 和现在的成员、申请人重新获取群数据
     void afterGroupChange(ServiceBase& me, int groupNo, std::set<std::string> affected, int lastSeq);
+    nlohmann::json momentsList(ServiceBase& me, const nlohmann::json& args);
+    // 点赞、评论、删除某条动态：change 执行修改，成功后通知能看到这条动态的人
+    nlohmann::json changeMoment(ServiceBase& me, int seq, const std::function<bool(std::string&)>& change);
+    void notifyMomentAudience(ServiceBase& me, const std::string& author);   // 向 author 及其好友推送 DATA_CHANGED moments
     void notifyChanged(ServiceType type, const std::string& id, std::initializer_list<const char*> topics);   // 推送 DATA_CHANGED
     void persist();   // 改了好友、群等内存数据后立即写回文件（消息类记录本来就是即时追加的）
 

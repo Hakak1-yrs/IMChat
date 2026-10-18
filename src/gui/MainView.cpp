@@ -448,11 +448,12 @@ void MainView::paintRail(Canvas& c) {
     if (local && services.size() < ServiceTypeHelper::all().size())   // 还有没开通的服务
         railButton(c, D2D1::RectF(cx - 22, y + 2, cx + 22, y + 46), kIconAdd, L"开通新服务", ACT_TOOL, TOOL_OPEN_SERVICE, false);
 
-    // 底部工具：朋友圈、点对点聊天、平台概况、立即保存（这几项直接操作本地数据，只在单机模式下有），退出登录
+    // 底部工具：朋友圈；点对点聊天、平台概况、立即保存（这三项直接操作本机，只在单机模式下有）；退出登录
+    const float momentsTop = local ? r.bottom - 274 : r.bottom - 118;
+    const D2D1_RECT_F moments = D2D1::RectF(cx - 22, momentsTop, cx + 22, momentsTop + 44);
+    railButton(c, moments, kIconCamera, GuiText::wide(me.momentsName), ACT_TOOL, TOOL_MOMENTS, false);
+    if (momentNotices_ > 0) c.fillCircle(moments.right - 9, moments.top + 9, 4.5f, Theme::rgb(Theme::DANGER));   // 有新互动
     if (local) {
-        const D2D1_RECT_F moments = D2D1::RectF(cx - 22, r.bottom - 274, cx + 22, r.bottom - 230);
-        railButton(c, moments, kIconCamera, GuiText::wide(me.momentsName), ACT_TOOL, TOOL_MOMENTS, false);
-        if (momentNotices_ > 0) c.fillCircle(moments.right - 9, moments.top + 9, 4.5f, Theme::rgb(Theme::DANGER));   // 有新互动
         const bool p2pActive = p2p_ && p2p_->active();
         railButton(c, D2D1::RectF(cx - 22, r.bottom - 222, cx + 22, r.bottom - 178), kIconConnect, L"QQ点对点聊天（TCP）", ACT_TOOL,
                    TOOL_P2P, p2pActive);

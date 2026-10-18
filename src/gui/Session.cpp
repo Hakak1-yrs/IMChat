@@ -8,6 +8,8 @@ void Session::loadAllGroups() {}
 
 void Session::loadGroup(int) {}
 
+void Session::loadMoments(const std::string&) {}
+
 std::string Session::takeNotice() { return ""; }
 
 std::string Session::status() const { return ""; }

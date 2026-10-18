@@ -358,6 +358,44 @@ void LocalSession::groupCommand(const GroupCommand& command, Done done) {
     done(ok, msg);
 }
 
+std::optional<std::vector<Moment>> LocalSession::moments(const std::string& author) const { return platform_.moments(*current_, author); }
+
+std::vector<std::string> LocalSession::momentNoticeList(bool unreadOnly) const {
+    return platform_.momentNotices(*current_, unreadOnly);
+}
+
+void LocalSession::markMomentsRead() { platform_.markMomentsRead(*current_); }
+
+void LocalSession::postMoment(const std::string& text, const std::string& scope, Done done) {
+    std::string msg;
+    const bool ok = platform_.postMoment(*current_, text, scope, msg);
+    done(ok, msg);
+}
+
+void LocalSession::toggleLike(int seq, Done done) {
+    std::string msg;
+    const bool ok = platform_.toggleLike(*current_, seq, msg);
+    done(ok, msg);
+}
+
+void LocalSession::commentMoment(int seq, const std::string& replyTo, const std::string& text, Done done) {
+    std::string msg;
+    const bool ok = platform_.commentMoment(*current_, seq, replyTo, text, msg);
+    done(ok, msg);
+}
+
+void LocalSession::deleteMoment(int seq, Done done) {
+    std::string msg;
+    const bool ok = platform_.deleteMoment(*current_, seq, msg);
+    done(ok, msg);
+}
+
+void LocalSession::deleteComment(int commentSeq, Done done) {
+    std::string msg;
+    const bool ok = platform_.deleteComment(*current_, commentSeq, msg);
+    done(ok, msg);
+}
+
 std::string LocalSession::nicknameOf(const std::string& id) const {
     ServiceBase* account = platform_.findAccount(current_->type(), id);
     return account ? account->nickname() : id;

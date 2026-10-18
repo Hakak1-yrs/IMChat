@@ -6,6 +6,7 @@
 #include "Conversation.h"
 #include "GroupService.h"
 #include "Message.h"
+#include "Moment.h"
 #include "ServiceType.h"
 
 // ---- 界面使用的数据：只是为了显示而整理的简单结构，与数据来自本地还是服务端无关 ----
@@ -133,6 +134,17 @@ public:
     virtual void loadGroup(int groupNo);      // 联网模式：向服务端取群详情
     virtual void createGroup(const std::string& name, Created done) = 0;
     virtual void groupCommand(const GroupCommand& command, Done done) = 0;
+
+    // ---- 朋友圈：可见范围、只显示共同好友的点赞和评论等规则由 Platform 按查看者处理 ----
+    virtual std::optional<std::vector<Moment>> moments(const std::string& author) const = 0;   // author 为空表示全部；最新的在前；联网模式下还没取回来时为空
+    virtual void loadMoments(const std::string& author);                        // 联网模式：向服务端取，取回后界面自动刷新
+    virtual std::vector<std::string> momentNoticeList(bool unreadOnly) const = 0;   // 别人给我的点赞、评论、回复
+    virtual void markMomentsRead() = 0;
+    virtual void postMoment(const std::string& text, const std::string& scope, Done done) = 0;
+    virtual void toggleLike(int seq, Done done) = 0;
+    virtual void commentMoment(int seq, const std::string& replyTo, const std::string& text, Done done) = 0;
+    virtual void deleteMoment(int seq, Done done) = 0;
+    virtual void deleteComment(int commentSeq, Done done) = 0;
 
     // ---- 刷新与提示 ----
     virtual bool changed() = 0;            // 自上次调用以来是否有新数据（新消息、其他窗口的修改……），有则界面刷新

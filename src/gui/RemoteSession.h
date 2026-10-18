@@ -70,6 +70,16 @@ public:
     void loadGroup(int groupNo) override;
     void createGroup(const std::string& name, Created done) override;
     void groupCommand(const GroupCommand& command, Done done) override;
+    std::optional<std::vector<Moment>> moments(const std::string& author) const override;
+    void loadMoments(const std::string& author) override;
+    std::vector<std::string> momentNoticeList(bool unreadOnly) const override;
+    int momentNotices() const override;
+    void markMomentsRead() override;
+    void postMoment(const std::string& text, const std::string& scope, Done done) override;
+    void toggleLike(int seq, Done done) override;
+    void commentMoment(int seq, const std::string& replyTo, const std::string& text, Done done) override;
+    void deleteMoment(int seq, Done done) override;
+    void deleteComment(int commentSeq, Done done) override;
     int pendingFriendRequests() const override;
     bool changed() override;
     std::string takeNotice() override;
@@ -104,7 +114,8 @@ private:
     void listLoaded();
     // 发一个通用请求，成功后在界面线程里调用 apply；initial 为 true 表示是登录时的首次加载（计入加载进度）
     void fetch(const char* op, nlohmann::json args, std::function<void(const nlohmann::json&)> apply, bool initial);
-    void reload(const std::string& topic);   // 重新取一类数据："contacts" / "social" / "groups"
+    void reload(const std::string& topic);   // 重新取一类数据："contacts" / "social" / "groups" / "moments"
+    void loadMomentNotices();
     // 修改类请求：成功后重新取 topics 对应的数据（以及 profileId 的资料），再把结果交给 done
     void mutate(const char* op, nlohmann::json args, std::vector<std::string> topics, const std::string& profileId, Done done);
     void applySocial(const nlohmann::json& data);
@@ -148,6 +159,9 @@ private:
     std::map<int, GroupInfo> groupInfos_;           // 打开过的群设置页从服务端取回的群详情
     std::vector<GroupBrief> allGroups_;
     bool allGroupsWanted_ = false;                  // 打开过“全部群”
+    std::map<std::string, std::vector<Moment>> moments_;   // 打开过的动态列表：作者（空表示全部）→ 动态
+    std::vector<std::string> notices_;              // 朋友圈互动消息
+    std::vector<std::string> unreadNotices_;
     bool dirty_ = false;
     std::string notice_;
     std::string status_;

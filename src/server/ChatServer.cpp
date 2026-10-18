@@ -375,6 +375,88 @@ void ChatServer::registerApi() {
     };
     api_["group.create"] = [this](Session&, ServiceBase& me, const json& args) { return createGroup(me, args); };
     api_["group.exec"] = [this](Session&, ServiceBase& me, const json& args) { return execGroup(me, args); };
+    api_["moments.list"] = [this](Session&, ServiceBase& me, const json& args) { return momentsList(me, args); };
+    api_["moments.notices"] = [this](Session&, ServiceBase& me, const json&) {
+        return json{ { "all", platform_.momentNotices(me, false) }, { "unread", platform_.momentNotices(me, true) } };
+    };
+    api_["moments.markRead"] = [this](Session&, ServiceBase& me, const json&) {
+        platform_.markMomentsRead(me);
+        return json::object();
+    };
+    api_["moments.post"] = [this](Session&, ServiceBase& me, const json& args) {
+        std::string msg;
+        if (!platform_.postMoment(me, field(args, "text"), field(args, "scope"), msg)) throw ApiError(msg);
+        notifyMomentAudience(me, me.id());
+        return json{ { "message", msg } };
+    };
+    api_["moments.like"] = [this](Session&, ServiceBase& me, const json& args) {
+        return changeMoment(me, static_cast<int>(number(args, "seq", 0)), [&](std::string& msg) {
+            return platform_.toggleLike(me, static_cast<int>(number(args, "seq", 0)), msg);
+        });
+    };
+    api_["moments.comment"] = [this](Session&, ServiceBase& me, const json& args) {
+        const int seq = static_cast<int>(number(args, "seq", 0));
+        return changeMoment(me, seq, [&](std::string& msg) {
+            return platform_.commentMoment(me, seq, field(args, "replyTo"), field(args, "text"), msg);
+        });
+    };
+    api_["moments.delete"] = [this](Session&, ServiceBase& me, const json& args) {
+        const int seq = static_cast<int>(number(args, "seq", 0));
+        return changeMoment(me, seq, [&](std::string& msg) { return platform_.deleteMoment(me, seq, msg); });
+    };
+    api_["moments.deleteComment"] = [this](Session&, ServiceBase& me, const json& args) {
+        std::string msg;
+        if (!platform_.deleteComment(me, static_cast<int>(number(args, "seq", 0)), msg)) throw ApiError(msg);
+        notifyMomentAudience(me, me.id());   // 评论可能在别人的动态下：通知我的好友（含动态作者）
+        return json{ { "message", msg } };
+    };
+}
+
+// ---- 朋友圈 ----
+
+json ChatServer::momentsList(ServiceBase& me, const json& args) {
+    json moments = json::array(), names = json::object();
+    auto remember = [&](const std::string& id) {
+        if (names.contains(id)) return;
+        ServiceBase* account = platform_.findAccount(me.type(), id);
+        names[id] = account ? account->nickname() : id;
+    };
+    // 可见范围、只显示共同好友的点赞和评论，这些规则都在 Platform::moments 里按查看者处理好了
+    for (const Moment& m : platform_.moments(me, field(args, "author"))) {
+        json comments = json::array();
+        for (const MomentComment& c : m.comments) {
+            comments.push_back({ { "seq", c.seq }, { "author", c.author }, { "replyTo", c.replyTo }, { "time", c.time }, { "text", c.text } });
+            remember(c.author);
+            if (!c.replyTo.empty()) remember(c.replyTo);
+        }
+        for (const std::string& id : m.likes) remember(id);
+        remember(m.author);
+        moments.push_back({ { "seq", m.seq },     { "author", m.author }, { "scope", m.author == me.id() ? m.scope : "" },
+                            { "time", m.time },   { "text", m.text },     { "likes", m.likes },
+                            { "comments", std::move(comments) } });
+    }
+    return json{ { "moments", std::move(moments) }, { "names", std::move(names) } };
+}
+
+json ChatServer::changeMoment(ServiceBase& me, int seq, const std::function<bool(std::string&)>& change) {
+    std::string author;   // 先找到动态作者（删除之后就找不到了）
+    for (const Moment& m : platform_.moments(me)) {
+        if (m.seq == seq) author = m.author;
+    }
+    std::string msg;
+    if (!change(msg)) throw ApiError(msg);
+    if (!author.empty()) notifyMomentAudience(me, author);
+    return json{ { "message", msg } };
+}
+
+void ChatServer::notifyMomentAudience(ServiceBase& me, const std::string& author) {
+    // 能看到这条动态的只可能是作者和作者的好友：通知他们重新获取（具体能看到什么，取的时候再按规则过滤）
+    ServiceBase* owner = platform_.findAccount(me.type(), author);
+    if (!owner) return;
+    if (author != me.id()) notifyChanged(me.type(), author, { "moments" });
+    for (const Friend& f : owner->friends().all()) {
+        if (f.id() != me.id()) notifyChanged(me.type(), f.id(), { "moments" });
+    }
 }
 
 // ---- 群：全部群、群详情、新建、群管理命令 ----

@@ -81,7 +81,7 @@ void FriendPage::build(PageModel& model) {
     if (other.isFriend) {
         if (!other.peerHasMe) model.note(L"对方已把你从好友列表中删除（单向删除）：你发的消息会被拒收，需要重新发送好友申请。");
         std::vector<PageModel::Button> buttons{ PageModel::button(L"发消息", ACT_CHAT, "", PageModel::PRIMARY) };
-        if (!s.isRemote()) buttons.push_back(PageModel::button(L"TA的" + GuiText::wide(me.momentsName), ACT_MOMENTS));   // 朋友圈暂未联网
+        buttons.push_back(PageModel::button(L"TA的" + GuiText::wide(me.momentsName), ACT_MOMENTS));
         buttons.push_back(PageModel::button(blockText, ACT_BLOCK));
         buttons.push_back(PageModel::button(L"删除好友", ACT_DELETE, "", PageModel::DANGER));
         model.actions(buttons);

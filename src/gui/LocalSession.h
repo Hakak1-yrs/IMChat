@@ -59,6 +59,14 @@ public:
     std::optional<GroupInfo> groupInfo(int groupNo) const override;
     void createGroup(const std::string& name, Created done) override;
     void groupCommand(const GroupCommand& command, Done done) override;
+    std::optional<std::vector<Moment>> moments(const std::string& author) const override;
+    std::vector<std::string> momentNoticeList(bool unreadOnly) const override;
+    void markMomentsRead() override;
+    void postMoment(const std::string& text, const std::string& scope, Done done) override;
+    void toggleLike(int seq, Done done) override;
+    void commentMoment(int seq, const std::string& replyTo, const std::string& text, Done done) override;
+    void deleteMoment(int seq, Done done) override;
+    void deleteComment(int commentSeq, Done done) override;
     bool changed() override;
     std::string takeNotice() override;
     int pendingFriendRequests() const override;

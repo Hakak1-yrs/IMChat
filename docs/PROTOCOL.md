@@ -47,7 +47,7 @@
 | `CALL_RESP` | 501 | S → C | 成功：`{reqId, ok: true, data}`；失败：`{reqId, ok: false, error}` |
 | `PRESENCE` | 510 | S → C | `{account, online}`：好友上线 / 下线 |
 | `MSG_REVOKED` | 511 | S → C | `{seq, revokedBy}`：会话里的一条消息被撤回 |
-| `DATA_CHANGED` | 512 | S → C | `{topics: ["contacts", "social", "groups"]}`：别人的操作影响了我（如通过了我的好友申请、把我拉进群），重新获取对应数据 |
+| `DATA_CHANGED` | 512 | S → C | `{topics: ["contacts", "social", "groups", "moments"]}`：别人的操作影响了我（如通过了我的好友申请、把我拉进群），重新获取对应数据 |
 | `ERROR_RESP` | 900 | S → C | `{reqId?, code, message}` |
 
 `LOGIN_RESP` 成功时还带有 `location`（所在地）和 `momentsName`（QQ空间 / 朋友圈……）。
@@ -75,6 +75,17 @@
 | `group.get` | `{groupNo}` | 群详情（见下）；群不存在时 `{exists: false, groupNo}` |
 | `group.create` | `{name}` | `{groupNo, message}` |
 | `group.exec` | `{kind, groupNo, target, text, on, members}` | `{message}`：群管理命令，`kind` 见下表 |
+
+| `moments.list` | `{author?}` | `{moments: [{seq, author, scope, time, text, likes, comments: [{seq, author, replyTo, time, text}]}], names: {账号: 昵称}}`：我能看到的动态，最新的在前 |
+| `moments.notices` | — | `{all: [文字…], unread: [文字…]}`：别人给我的点赞、评论、回复 |
+| `moments.markRead` | — | `{}` |
+| `moments.post` | `{text, scope}` | `{message}`；`scope`：`all` / `self` / `only:a,b` / `except:a,b` |
+| `moments.like` | `{seq}` | `{message}`（点赞或取消） |
+| `moments.comment` | `{seq, replyTo?, text}` | `{message}` |
+| `moments.delete` | `{seq}` | `{message}` |
+| `moments.deleteComment` | `{seq}` | `{message}` |
+
+朋友圈的规则都由服务端按查看者处理：只能看到互为好友的人的动态；可见范围不允许的不下发；点赞和评论只下发共同好友的（作者本人能看到全部）；别人动态的 `scope` 为空，不泄露"不给谁看"的名单。发表、点赞、评论、删除后，动态作者和作者的好友收到 `DATA_CHANGED {topics: ["moments"]}`。
 
 修改好友关系、备注、群数据的操作，服务端会立即把数据文件写回磁盘；消息类记录（好友申请、拉黑等）本来就是即时追加写入的。
 

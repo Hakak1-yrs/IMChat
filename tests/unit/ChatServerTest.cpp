@@ -785,3 +785,58 @@ TEST_F(ChatServerTest, CreateAndDissolveGroup) {
     EXPECT_EQ(call(li, "group.get", { { "groupNo", groupNo } })["data"]["exists"], false);
     EXPECT_EQ(call(zhang, "group.exec", { { "kind", "dissolve" }, { "groupNo", 1001 } })["ok"], false);   // 预置群不能解散
 }
+
+// ======================== 朋友圈 ========================
+
+namespace {
+const json* findMoment(const json& list, const std::string& text) {
+    for (const json& m : list)
+        if (m["text"] == text) return &m;
+    return nullptr;
+}
+}  // namespace
+
+TEST_F(ChatServerTest, MomentsRespectVisibilityAndNotifyFriends) {
+    startServer();
+    pushes.clear();
+    TestClient zhang(port_), li(port_), wang(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    ASSERT_EQ(wang.login("QQ", "10003")["ok"], true);
+    EXPECT_EQ(call(zhang, "moments.post", { { "text", " " }, { "scope", "all" } })["ok"], false);   // 内容不能为空
+    ASSERT_EQ(call(zhang, "moments.post", { { "text", "周末去爬山" }, { "scope", "all" } })["ok"], true);
+    ASSERT_TRUE(waitPush(li, MessageType::DATA_CHANGED));   // 好友收到通知，去取新动态
+    ASSERT_EQ(call(zhang, "moments.post", { { "text", "只有我能看" }, { "scope", "self" } })["ok"], true);
+    ASSERT_EQ(call(zhang, "moments.post", { { "text", "不给李四看" }, { "scope", "except:10002" } })["ok"], true);
+
+    const json liView = call(li, "moments.list", { { "author", "10001" } })["data"];
+    const json* hike = findMoment(liView["moments"], "周末去爬山");
+    ASSERT_TRUE(hike);
+    EXPECT_EQ((*hike)["scope"], "");   // 别人的可见范围不下发（“不给谁看”的名单不能泄露）
+    EXPECT_EQ(liView["names"]["10001"], "小张");
+    EXPECT_FALSE(findMoment(liView["moments"], "只有我能看"));
+    EXPECT_FALSE(findMoment(liView["moments"], "不给李四看"));
+    EXPECT_TRUE(findMoment(call(wang, "moments.list", { { "author", "10001" } })["data"]["moments"], "不给李四看"));
+
+    const int seq = (*hike)["seq"].get<int>();
+    ASSERT_EQ(call(li, "moments.like", { { "seq", seq } })["ok"], true);
+    ASSERT_EQ(call(li, "moments.comment", { { "seq", seq }, { "text", "带我一个" } })["ok"], true);
+    ASSERT_EQ(call(zhang, "moments.comment", { { "seq", seq }, { "replyTo", "10002" }, { "text", "好啊" } })["ok"], true);
+    const json notices = call(zhang, "moments.notices")["data"];
+    EXPECT_EQ(notices["unread"].size(), 2u);   // 李四的赞和评论（自己的回复不算）
+    call(zhang, "moments.markRead");
+    EXPECT_TRUE(call(zhang, "moments.notices")["data"]["unread"].empty());
+
+    const json mine = call(zhang, "moments.list", { { "author", "10001" } })["data"]["moments"];
+    const json* own = findMoment(mine, "周末去爬山");
+    ASSERT_TRUE(own);
+    EXPECT_EQ((*own)["scope"], "all");
+    EXPECT_EQ((*own)["likes"], json::array({ "10002" }));
+    ASSERT_EQ((*own)["comments"].size(), 2u);
+    EXPECT_EQ((*own)["comments"][1]["replyTo"], "10002");
+    EXPECT_TRUE(findMoment(mine, "只有我能看"));
+
+    EXPECT_EQ(call(li, "moments.delete", { { "seq", seq } })["ok"], false);   // 不能删别人的动态
+    ASSERT_EQ(call(zhang, "moments.delete", { { "seq", seq } })["ok"], true);
+    EXPECT_FALSE(findMoment(call(li, "moments.list")["data"]["moments"], "周末去爬山"));
+}

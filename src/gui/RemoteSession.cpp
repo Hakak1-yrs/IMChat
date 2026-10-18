@@ -192,6 +192,7 @@ void RemoteSession::loadLists() {
     for (const auto& entry : profiles_) loadProfile(entry.first);
     for (const auto& entry : groupInfos_) loadGroup(entry.first);
     if (allGroupsWanted_) loadAllGroups();
+    reload("moments");   // 互动消息的未读数（导航栏红点），以及打开过的动态
 }
 
 void RemoteSession::listLoaded() {
@@ -218,6 +219,9 @@ void RemoteSession::reload(const std::string& topic) {
         fetch("groups.list", json::object(), [this](const json& d) { applyGroups(d); }, false);
         for (const auto& entry : groupInfos_) loadGroup(entry.first);
         if (allGroupsWanted_) loadAllGroups();
+    } else if (topic == "moments") {   // 好友发了动态、有人点赞评论：打开过的动态列表和互动消息重新取
+        for (const auto& entry : moments_) loadMoments(entry.first);
+        loadMomentNotices();
     }
 }
 
@@ -684,6 +688,75 @@ void RemoteSession::groupCommand(const GroupCommand& command, Done done) {
     const json args = { { "kind", GroupCommand::kindName(command.kind) }, { "groupNo", command.groupNo }, { "target", command.target },
                         { "text", command.text }, { "on", command.on }, { "members", command.members } };
     mutate("group.exec", args, { "groups" }, "", std::move(done));
+}
+
+// ---- 朋友圈 ----
+
+std::optional<std::vector<Moment>> RemoteSession::moments(const std::string& author) const {
+    auto it = moments_.find(author);
+    if (it == moments_.end()) return std::nullopt;   // 还没取回来
+    return it->second;
+}
+
+void RemoteSession::loadMoments(const std::string& author) {
+    fetch("moments.list", json{ { "author", author } }, [this, author](const json& data) {
+        const json names = data.value("names", json::object());
+        for (const auto& [id, nickname] : names.items()) nicknames_[id] = nickname.get<std::string>();
+        std::vector<Moment>& list = moments_[author];
+        list.clear();
+        for (const json& item : data.value("moments", json::array())) {
+            Moment m;
+            m.seq = item.value("seq", 0);
+            m.service = me_.type;
+            m.author = item.value("author", "");
+            m.scope = item.value("scope", "");
+            m.time = item.value("time", "");
+            m.text = item.value("text", "");
+            m.likes = item.value("likes", std::vector<std::string>());
+            for (const json& c : item.value("comments", json::array())) {
+                MomentComment comment;
+                comment.seq = c.value("seq", 0);
+                comment.author = c.value("author", "");
+                comment.replyTo = c.value("replyTo", "");
+                comment.time = c.value("time", "");
+                comment.text = c.value("text", "");
+                m.comments.push_back(comment);
+            }
+            list.push_back(m);
+        }
+    }, false);
+}
+
+void RemoteSession::loadMomentNotices() {
+    fetch("moments.notices", json::object(), [this](const json& data) {
+        notices_ = data.value("all", std::vector<std::string>());
+        unreadNotices_ = data.value("unread", std::vector<std::string>());
+    }, false);
+}
+
+std::vector<std::string> RemoteSession::momentNoticeList(bool unreadOnly) const { return unreadOnly ? unreadNotices_ : notices_; }
+
+int RemoteSession::momentNotices() const { return static_cast<int>(unreadNotices_.size()); }
+
+void RemoteSession::markMomentsRead() {
+    unreadNotices_.clear();
+    client_->call("moments.markRead", json::object(), nullptr);
+}
+
+void RemoteSession::postMoment(const std::string& text, const std::string& scope, Done done) {
+    mutate("moments.post", json{ { "text", text }, { "scope", scope } }, { "moments" }, "", std::move(done));
+}
+
+void RemoteSession::toggleLike(int seq, Done done) { mutate("moments.like", json{ { "seq", seq } }, { "moments" }, "", std::move(done)); }
+
+void RemoteSession::commentMoment(int seq, const std::string& replyTo, const std::string& text, Done done) {
+    mutate("moments.comment", json{ { "seq", seq }, { "replyTo", replyTo }, { "text", text } }, { "moments" }, "", std::move(done));
+}
+
+void RemoteSession::deleteMoment(int seq, Done done) { mutate("moments.delete", json{ { "seq", seq } }, { "moments" }, "", std::move(done)); }
+
+void RemoteSession::deleteComment(int commentSeq, Done done) {
+    mutate("moments.deleteComment", json{ { "seq", commentSeq } }, { "moments" }, "", std::move(done));
 }
 
 std::string RemoteSession::nicknameOf(const std::string& id) const {
