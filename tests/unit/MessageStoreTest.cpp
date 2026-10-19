@@ -113,6 +113,11 @@ TEST_P(MessageStoreTest, MessagesAfterReturnsOnlyTheNextPage) {
     EXPECT_EQ(texts(s.messagesAfter(ServiceType::QQ, "10001", { 1001 }, 4, 1)), "5");
     EXPECT_EQ(texts(s.messagesAfter(ServiceType::QQ, "10001", { 1001 }, 7, 0)), "");
     EXPECT_EQ(texts(s.messagesAfter(ServiceType::QQ, "10001", {}, 1, 0)), "5");   // 没有群：只有私信
+    EXPECT_EQ(s.lastSeq(), 7);
+    s.clearGroup(ServiceType::QQ, 1001);
+    EXPECT_EQ(s.lastSeq(), 7);   // 清除不会让序号回退
+    s.postPrivate(ServiceType::QQ, "10001", "10002", "8");
+    EXPECT_EQ(s.lastSeq(), 8);
 }
 
 TEST_P(MessageStoreTest, RevokeUnreadAndReadMarks) {

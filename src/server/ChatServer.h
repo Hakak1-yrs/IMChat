@@ -109,7 +109,7 @@ private:
     nlohmann::json groupsAll(ServiceBase& me);
     nlohmann::json createGroup(ServiceBase& me, const nlohmann::json& args);
     nlohmann::json execGroup(ServiceBase& me, const nlohmann::json& args);
-    // 群发生变化后：把新产生的群消息（lastSeq 之后的系统提示、公告）推给在线成员，
+    // 群发生变化后：把新产生的群消息（序号大于操作前 lastSeq 的系统提示、公告）推给在线成员，
     // 再通知 affected 和现在的成员、申请人重新获取群数据
     void afterGroupChange(ServiceBase& me, int groupNo, std::set<std::string> affected, int lastSeq);
     nlohmann::json momentsList(ServiceBase& me, const nlohmann::json& args);

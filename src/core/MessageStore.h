@@ -36,6 +36,8 @@ public:
     virtual std::vector<Message> messagesAfter(ServiceType service, const std::string& me, const std::vector<int>& groupNos,
                                                int afterSeq, std::size_t limit) const = 0;
     virtual bool findMessage(ServiceType service, int seq, Message& out) const = 0;
+    // 已经分配出去的最大序号：之后保存的消息、记录，序号一定比它大
+    virtual int lastSeq() const = 0;
     // sender 最近发的一条消息（刚保存的那条：拿到它的序号和时间）
     virtual bool lastFrom(ServiceType service, const std::string& sender, Message& out) const = 0;
     // 未读：不计系统提示、撤回的消息和自己发的消息

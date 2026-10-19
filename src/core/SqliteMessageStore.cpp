@@ -473,6 +473,11 @@ std::vector<Message> SqliteMessageStore::messagesAfter(ServiceType service, cons
     return collect(query);
 }
 
+int SqliteMessageStore::lastSeq() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return lastSeq_;
+}
+
 bool SqliteMessageStore::findMessage(ServiceType service, int seq, Message& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     Query query(statement(std::string(kMessageColumns) + "WHERE seq = ?1 AND service = ?2"));

@@ -126,6 +126,11 @@ std::vector<Message> MessageCenter::messagesAfter(ServiceType service, const std
     return result;
 }
 
+int MessageCenter::lastSeq() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return refresh().count;
+}
+
 bool MessageCenter::findMessage(ServiceType service, int seq, Message& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const State& state = refresh();

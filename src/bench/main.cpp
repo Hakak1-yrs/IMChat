@@ -347,6 +347,16 @@ int storeBench(std::string dataDir, const std::string& kind, int count) {
     timeIt("同步：第一次（从头取 200 条）", [&](int) {
         store->messagesAfter(ServiceType::QQ, "10002", { 1001 }, 0, 201);
     }, 100);
+    // 群操作（邀请、改公告……）之后要推送新产生的系统提示：原来读出整个群的历史找新的，现在只读 lastSeq 之后的
+    timeIt("群操作后：读整个群的历史", [&](int) { store->groupHistory(ServiceType::QQ, 1001); }, 20);
+    timeIt("群操作后：只读 lastSeq 之后的", [&](int) {
+        store->messagesAfter(ServiceType::QQ, "10003", { 1001 }, store->lastSeq(), 0);
+    }, 100);
+    // 未读数（单机模式取联系人、群列表时要算）：已读到只差最后 20 条
+    store->markPrivateRead(ServiceType::QQ, "10002", "10001", afterSeq);
+    store->markGroupRead(ServiceType::QQ, 1001, "10002", afterSeq);
+    timeIt("未读：私信（unreadPrivate）", [&](int) { store->unreadPrivate(ServiceType::QQ, "10002"); }, 100);
+    timeIt("未读：群（unreadGroups）", [&](int) { store->unreadGroups(ServiceType::QQ, "10002", { 1001 }); }, 100);
     return 0;
 }
 

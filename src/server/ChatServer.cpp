@@ -645,10 +645,11 @@ json ChatServer::groupsAll(ServiceBase& me) {
 
 json ChatServer::createGroup(ServiceBase& me, const json& args) {
     std::string msg;
+    const int lastSeq = platform_.messages().lastSeq();
     const int groupNo = GroupService::create(platform_, me, field(args, "name"), msg);
     if (groupNo == 0) throw ApiError(msg);
     persist();
-    afterGroupChange(me, groupNo, {}, 0);   // 推送“某某创建了群聊”
+    afterGroupChange(me, groupNo, {}, lastSeq);   // 推送“某某创建了群聊”
     return json{ { "groupNo", groupNo }, { "message", msg } };
 }
 
@@ -661,14 +662,12 @@ json ChatServer::execGroup(ServiceBase& me, const json& args) {
     command.on = args.value("on", true);
     command.members = args.value("members", std::vector<std::string>());
 
-    // 记下操作前的相关人员和最后一条群消息：被踢、退群、被拒绝的人也要通知；之后新产生的系统提示要推送出去
+    // 记下操作前的相关人员和已分配的最大序号：被踢、退群、被拒绝的人也要通知；之后新产生的系统提示要推送出去
     std::set<std::string> affected;
-    int lastSeq = 0;
+    const int lastSeq = platform_.messages().lastSeq();
     if (const Group* g = platform_.groups().find(me.type(), command.groupNo)) {
         affected.insert(g->members().begin(), g->members().end());
         affected.insert(g->pending().begin(), g->pending().end());
-        const std::vector<Message> history = platform_.messages().groupHistory(me.type(), command.groupNo);
-        if (!history.empty()) lastSeq = history.back().seq();
     }
     if (!command.target.empty()) affected.insert(command.target);
     std::string msg;
@@ -684,9 +683,10 @@ void ChatServer::afterGroupChange(ServiceBase& me, int groupNo, std::set<std::st
         affected.insert(g->members().begin(), g->members().end());
         affected.insert(g->pending().begin(), g->pending().end());
         // 操作产生的新群消息（“A 邀请 B 加入了群聊”、群公告……）推给现在的全体在线成员，包括操作者自己：
-        // 这些消息不是他用 SEND_MSG_REQ 发的，不推送他就收不到
-        for (const Message& m : platform_.messages().groupHistory(me.type(), groupNo)) {
-            if (m.seq() <= lastSeq) continue;
+        // 这些消息不是他用 SEND_MSG_REQ 发的，不推送他就收不到。
+        // 只读 lastSeq 之后的部分（不必把整个群的历史读出来）；同时会读到 me 在这之后的私信（实际上没有），跳过
+        for (const Message& m : platform_.messages().messagesAfter(me.type(), me.id(), { groupNo }, lastSeq, 0)) {
+            if (!m.isGroup()) continue;
             const json push = messageJson(m);
             for (const std::string& id : g->members()) pushTo(service + " " + id, MessageType::MSG_PUSH, push);
         }
