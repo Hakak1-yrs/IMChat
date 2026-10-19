@@ -2,9 +2,11 @@
 //   IMChatBench prepare <数据目录> [用户数=200]
 //       用业务接口注册一批 QQ 账号：相邻两人互为好友（1-2、3-4……），前 100 人在同一个群里，账号列表写入 bench_accounts.txt
 //   IMChatBench run --data <数据目录> [--host 127.0.0.1] [--port 9000] [--clients 200] [--messages 100]
-//                   [--threads 4] [--window 1] [--group]
-//       每个客户端一条连接，登录后给好友连发 messages 条私信（--group 时发到群里），
+//                   [--threads 4] [--window 1] [--group | --remark]
+//       每个客户端一条连接，登录后给好友连发 messages 条私信（--group 时发到群里；--remark 时改为反复修改好友备注），
 //       统计吞吐量、回执延迟（p50 / p90 / p99 / 最大），以及对方实际收到的推送条数。
+//   IMChatBench store <目录> text|sqlite [次数]   存储层微基准
+//   IMChatBench save <数据目录> [次数]             加好友后保存数据文件的耗时
 // 客户端用的是项目自己的网络库（EventLoop + TcpClient）：threads 个事件循环线程，每个线程负责一部分连接
 #include "EventLoop.h"   // 网络头文件（winsock2.h）必须在其他 Windows 头文件之前
 #include <algorithm>
@@ -89,6 +91,7 @@ struct Config {
     int threads = 4;
     int window = 1;        // 每个客户端同时在途（发出还没收到回执）的消息数上限
     bool group = false;
+    bool remark = false;   // 不发消息，改为反复修改好友备注（每次都要保存数据文件）
     int groupNo = 0;
     std::string runId;     // 本次运行的随机编号，拼进 clientMsgId
 };
@@ -141,6 +144,13 @@ private:
 
     void sendNext() {
         if (sent_ >= config_.messages) return;
+        if (config_.remark) {   // 通用请求，按 reqId 对应回执
+            const std::string id = std::to_string(++sent_);
+            inflight_[id] = Clock::now();
+            send(MessageType::CALL_REQ, { { "reqId", sent_ }, { "op", "friends.remark" },
+                                          { "args", { { "id", peer_ }, { "remark", "备注" + id } } } });
+            return;
+        }
         // clientMsgId 每次运行都不同：服务端按它去重，重复的编号会被当成重发，直接返回原来的回执、不再保存和推送
         const std::string id = config_.runId + "-" + account_ + "-" + std::to_string(++sent_);
         json request = { { "clientMsgId", id }, { "text", "压测消息 " + id } };
@@ -168,8 +178,10 @@ private:
         if (packet.type == MessageType::LOGIN_RESP) {
             if (packet.body.value("ok", false)) ++stats_.loggedIn;
             else ++stats_.loginFailed;
-        } else if (packet.type == MessageType::SEND_MSG_ACK) {
-            auto it = inflight_.find(packet.body.value("clientMsgId", ""));
+        } else if (packet.type == MessageType::SEND_MSG_ACK || packet.type == MessageType::CALL_RESP) {
+            const std::string key = packet.type == MessageType::CALL_RESP ? std::to_string(packet.body.value("reqId", 0))
+                                                                         : packet.body.value("clientMsgId", "");
+            auto it = inflight_.find(key);
             if (it == inflight_.end()) return;
             latencies_.push_back(std::chrono::duration<double, std::milli>(Clock::now() - it->second).count());
             inflight_.erase(it);
@@ -256,7 +268,7 @@ int run(Config config, const std::string& dataDir) {
     config.threads = std::max(1, std::min(config.threads, config.clients));
     config.runId = std::to_string(std::random_device{}());
     std::cout << "服务器 " << config.host << ":" << config.port << "，" << config.clients << " 个客户端，" << config.threads
-              << " 个线程，每个客户端发 " << config.messages << " 条" << (config.group ? "群消息" : "私信") << "，窗口 "
+              << " 个线程，每个客户端发 " << config.messages << " 条" << (config.remark ? "改备注请求" : config.group ? "群消息" : "私信") << "，窗口 "
               << config.window << "\n";
 
     Stats stats;
@@ -277,7 +289,7 @@ int run(Config config, const std::string& dataDir) {
     const bool finished = waitFor([&] { return stats.acked >= expected; }, std::chrono::seconds(600));
     const double seconds = std::chrono::duration<double>(Clock::now() - sendStart).count();
     // 推送可能比回执晚一点到：再等一会儿
-    const long long expectedPushes = config.group ? static_cast<long long>(expected) * (stats.loggedIn - 1) : expected;
+    const long long expectedPushes = config.remark ? 0 : config.group ? static_cast<long long>(expected) * (stats.loggedIn - 1) : expected;
     waitFor([&] { return stats.pushes >= expectedPushes; }, std::chrono::seconds(5));
     for (Worker& w : workers) w.stop();
 
@@ -338,12 +350,43 @@ int storeBench(std::string dataDir, const std::string& kind, int count) {
     return 0;
 }
 
+// ======================== save：改一次好友关系后保存数据文件 ========================
+
+// 服务端每次修改好友、群之后都要保存（ChatServer::persist），这里测一次保存要多久：数据目录用 prepare 准备
+int saveBench(std::string dataDir, int times) {
+    if (dataDir.back() != '/' && dataDir.back() != '\\') dataDir += '/';
+    Platform platform(dataDir);
+    std::vector<ServiceBase*> accounts;
+    std::ifstream in(Util::pathOf(dataDir + kAccountsFile));
+    for (std::string line; std::getline(in, line);) {
+        if (line.empty() || line[0] == '#') continue;
+        if (ServiceBase* account = platform.findAccount(ServiceType::QQ, line)) accounts.push_back(account);
+    }
+    if (accounts.size() < static_cast<std::size_t>(times) * 2 + 2) {
+        std::cerr << "账号不够：先用 prepare 准备至少 " << times * 2 + 2 << " 个账号\n";
+        return 1;
+    }
+    std::string msg;
+    const auto start = Clock::now();
+    for (int i = 0; i < times; ++i) {   // prepare 让 (0,1) (2,3)…… 互为好友，这里再加 (1,2) (3,4)……
+        platform.addFriend(*accounts[2 * i + 1], accounts[2 * i + 2]->id(), "", msg);
+        if (!platform.save()) {
+            std::cerr << "保存失败\n";
+            return 1;
+        }
+    }
+    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count() / times;
+    std::printf("%zu 个账号，加好友 + 保存 %d 次：%.2f 毫秒/次\n", accounts.size(), times, ms);
+    return 0;
+}
+
 void usage() {
     std::cout << "用法：\n"
                  "  IMChatBench prepare <数据目录> [用户数=200]\n"
                  "  IMChatBench store <目录> text|sqlite [次数=10000]   存储层微基准\n"
+                 "  IMChatBench save <数据目录> [次数=100]   加好友后保存数据文件的耗时（数据目录用 prepare 准备）\n"
                  "  IMChatBench run --data <数据目录> [--host 127.0.0.1] [--port 9000] [--clients 200] [--messages 100]\n"
-                 "                  [--threads 4] [--window 1] [--group]\n";
+                 "                  [--threads 4] [--window 1] [--group | --remark]\n";
 }
 
 }  // namespace
@@ -369,6 +412,7 @@ int main(int argc, char** argv) {
     }
     try {
         if (args[0] == "prepare" && args.size() >= 2) return prepare(args[1], args.size() >= 3 ? std::stoi(args[2]) : 200);
+        if (args[0] == "save" && args.size() >= 2) return saveBench(args[1], args.size() >= 3 ? std::stoi(args[2]) : 100);
         if (args[0] == "store" && args.size() >= 3) return storeBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
         if (args[0] == "run") {
             Config config;
@@ -383,6 +427,7 @@ int main(int argc, char** argv) {
                 else if (args[i] == "--threads" && hasValue) config.threads = std::stoi(args[++i]);
                 else if (args[i] == "--window" && hasValue) config.window = std::max(1, std::stoi(args[++i]));
                 else if (args[i] == "--group") config.group = true;
+        else if (args[i] == "--remark") config.remark = true;
                 else {
                     usage();
                     return 1;

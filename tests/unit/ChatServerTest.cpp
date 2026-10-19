@@ -924,6 +924,42 @@ TEST_F(ChatServerTest, TokenBucketRejectsFloodingButAllowsBursts) {
     EXPECT_GE(stats["pushes"], 4);
 }
 
+TEST_F(ChatServerTest, SocialChangesAreSavedBeforeTheReplyAndBatchedPerRound) {
+    ChatServer::Options options;
+    options.ioThreads = 2;   // 回执经过发件箱：好友、群的修改推迟到本轮发出回执之前统一保存
+    startServer(options);
+    TestClient zhang(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    pushes.clear();
+    const std::string friendsFile = dataDir_ + "friends.txt";
+    // 收到"成功"时，修改已经写进文件（不必等服务端退出）
+    ASSERT_EQ(call(zhang, "friends.remark", { { "id", "10002" }, { "remark", "刚改的" } })["ok"], true);
+    EXPECT_NE(TestServer::readText(friendsFile).find("QQ 10001 10002 刚改的"), std::string::npos);
+
+    // 一次写出 50 个修改：同一轮里处理的只保存一次，所以保存次数比修改次数少
+    const long long savesBefore = call(zhang, "server.stats")["data"]["dataSaves"].get<long long>();
+    std::string burst;
+    for (int i = 1; i <= 50; ++i) {
+        Packet packet;
+        packet.type = MessageType::CALL_REQ;
+        packet.body = { { "reqId", 1000 + i }, { "op", "friends.remark" },
+                        { "args", { { "id", "10002" }, { "remark", "备注" + std::to_string(i) } } } };
+        burst += packet.encode();
+    }
+    zhang.sendRaw(burst);
+    for (int replies = 0; replies < 50;) {
+        std::optional<Packet> response = zhang.receive();
+        ASSERT_TRUE(response);
+        if (response->type != MessageType::CALL_RESP) continue;
+        EXPECT_EQ(response->body["ok"], true);
+        ++replies;
+    }
+    const long long saves = call(zhang, "server.stats")["data"]["dataSaves"].get<long long>() - savesBefore;
+    EXPECT_GE(saves, 1);
+    EXPECT_LT(saves, 50);
+    EXPECT_NE(TestServer::readText(friendsFile).find("QQ 10001 10002 备注50"), std::string::npos);   // 最后一次修改也已保存
+}
+
 TEST_F(ChatServerTest, RepeatedWrongPasswordsLockTheAccountForAWhile) {
     ChatServer::Options options;
     options.maxLoginFailures = 5;

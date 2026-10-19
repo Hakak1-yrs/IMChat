@@ -71,6 +71,7 @@ private:
         long long calls = 0;         // 通用请求
         long long rateLimited = 0;   // 因发送过快被拒绝的消息
         long long loginLockouts = 0; // 因登录失败太多次而锁定的次数
+        long long dataSaves = 0;     // 保存好友、群等数据文件的次数（一轮里的多次修改只存一次）
     };
     struct LoginThrottle {   // 某个账号或 IP 的登录失败记录
         int failures = 0;
@@ -116,7 +117,9 @@ private:
     nlohmann::json changeMoment(ServiceBase& me, int seq, const std::function<bool(std::string&)>& change);
     void notifyMomentAudience(ServiceBase& me, const std::string& author);   // 向 author 及其好友推送 DATA_CHANGED moments
     void notifyChanged(ServiceType type, const std::string& id, std::initializer_list<const char*> topics);   // 推送 DATA_CHANGED
-    void persist();   // 改了好友、群等内存数据后立即写回文件（消息类记录本来就是即时追加的）
+    // 改了好友、群等内存数据后写回文件（消息类记录本来就是即时追加的）：多线程或批量提交时推迟到本轮发出回执之前，一轮只存一次
+    void persist();
+    void saveData();
 
     void onConnection(const TcpConnection::Ptr& connection);
     void onMessage(const TcpConnection::Ptr& connection, Buffer& buffer);
@@ -158,6 +161,7 @@ private:
         void run() const;   // 在连接所属的线程里调用
     };
     void enqueue(Outgoing item);
+    void scheduleFlush();   // 安排本轮结束时执行 flushOutbox（已经安排过就不再重复）
     void flushOutbox();
     void sendError(const TcpConnection::Ptr& connection, const nlohmann::json& request, ErrorCode code,
                    const std::string& message);
@@ -181,4 +185,6 @@ private:
     std::unordered_map<std::string, LoginThrottle> throttles_;   // "A 服务 账号" / "I ip" → 登录失败记录
     bool batchedStore_ = false;   // 消息存储批量提交（SQLite）
     bool useOutbox_ = false;      // 发送先进发件箱：多线程时按线程分批；批量提交时保证先提交再发回执
+    bool flushScheduled_ = false; // 本轮已经安排了 flushOutbox
+    bool dataDirty_ = false;      // 好友、群等数据改过，还没保存（在 flushOutbox 里保存）
 };

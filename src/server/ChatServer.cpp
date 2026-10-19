@@ -98,6 +98,7 @@ ChatServer::~ChatServer() {
     if (statsTimer_ != 0) loop_.cancel(statsTimer_);
     server_.stop();   // 先停掉 I/O 线程：它们的回调会访问下面这些成员，必须在成员销毁之前停
     if (batchedStore_) platform_.messages().setCommitScheduler(nullptr);   // 提交剩下的写入，之后不再安排提交任务
+    if (dataDirty_) saveData();   // 还没来得及保存的好友、群修改
 }
 
 bool ChatServer::start(std::string& error) {
@@ -440,7 +441,8 @@ json ChatServer::statsJson() const {
                  { "pushes", stats_.pushes },
                  { "calls", stats_.calls },
                  { "rateLimited", stats_.rateLimited },
-                 { "loginLockouts", stats_.loginLockouts } };
+                 { "loginLockouts", stats_.loginLockouts },
+                 { "dataSaves", stats_.dataSaves } };
 }
 
 void ChatServer::logStats() {
@@ -801,7 +803,20 @@ void ChatServer::notifyChanged(ServiceType type, const std::string& id, std::ini
 }
 
 void ChatServer::persist() {
-    // 好友关系、备注保存在 friends.txt 等文件中，原来只在程序退出时写回；服务端长期运行，改完立即保存，崩溃也不丢
+    // 好友关系、备注保存在 friends.txt 等文件中，原来只在程序退出时写回；服务端长期运行，改完就要保存，崩溃也不丢。
+    // 但一次保存要把几个文件整体重写并刷到磁盘（几毫秒到十几毫秒，大部分是 fsync），每改一次存一次，
+    // 业务线程每秒只能处理一百多次这类修改。所以和消息的批量提交一样：本轮只做标记，
+    // 发件箱交出回执之前统一保存一次——客户端收到"成功"时数据一定已经写入磁盘
+    if (!useOutbox_) {   // 回执不经过发件箱、直接发出：只能立即保存
+        saveData();
+        return;
+    }
+    dataDirty_ = true;
+    scheduleFlush();
+}
+
+void ChatServer::saveData() {
+    ++stats_.dataSaves;
     if (!platform_.save()) Log::warn("保存数据文件失败（可能被其他程序改过，已另存冲突副本）");
 }
 
@@ -990,8 +1005,14 @@ void ChatServer::enqueue(Outgoing item) {
     // - 多线程：按 I/O 线程分组，每个线程只投递一次。否则群发时每条推送都是一次跨线程投递（加一次唤醒），
     //   I/O 线程每次只拿到一条，合并写也就失效了；
     // - 存储批量提交：保证先提交、再发回执
-    if (outbox_.empty()) loop_.queueInLoop([this] { flushOutbox(); });
+    scheduleFlush();
     outbox_.push_back(std::move(item));
+}
+
+void ChatServer::scheduleFlush() {
+    if (flushScheduled_) return;
+    flushScheduled_ = true;
+    loop_.queueInLoop([this] { flushOutbox(); });
 }
 
 void ChatServer::Outgoing::run() const {
@@ -1001,8 +1022,13 @@ void ChatServer::Outgoing::run() const {
 }
 
 void ChatServer::flushOutbox() {
-    // 存储批量提交时：先提交本轮的写入，再把回执、推送交出去——客户端收到回执时，消息一定已经保存
+    // 先提交本轮的写入（消息批量提交、好友和群的数据文件），再把回执、推送交出去——客户端收到回执时，数据一定已经保存
+    flushScheduled_ = false;
     platform_.messages().commitPending();
+    if (dataDirty_) {
+        dataDirty_ = false;
+        saveData();
+    }
     std::vector<Outgoing> items;
     items.swap(outbox_);
     if (options_.ioThreads == 0) {   // 单线程：连接都在本线程，按顺序直接执行
