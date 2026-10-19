@@ -3,11 +3,20 @@
 #include <sstream>
 #include "Util.h"
 
+long long GroupManager::key(ServiceType service, int groupNo) {
+    return (static_cast<long long>(service) << 32) | static_cast<unsigned int>(groupNo);
+}
+
+Group* GroupManager::add(std::unique_ptr<Group> group) {
+    Group* added = group.get();
+    byNo_[key(added->service(), added->groupNo())] = added;
+    groups_.push_back(std::move(group));
+    return added;
+}
+
 Group* GroupManager::find(ServiceType service, int groupNo) const {
-    for (const auto& g : groups_) {
-        if (g->service() == service && g->groupNo() == groupNo) return g.get();
-    }
-    return nullptr;
+    auto it = byNo_.find(key(service, groupNo));
+    return it == byNo_.end() ? nullptr : it->second;
 }
 
 std::vector<Group*> GroupManager::groupsOfService(ServiceType service) const {
@@ -33,8 +42,7 @@ void GroupManager::createPresetGroups(ServiceType service, const std::string& ow
     const char* topics[] = { "交流群", "学习群", "兴趣群", "活动群", "通知群", "闲聊群" };
     for (int i = 0; i < 6; ++i) {
         std::string name = ServiceTypeHelper::name(service) + topics[i];
-        groups_.push_back(std::make_unique<Group>(service, 1001 + i, name, ownerId, mode));
-        groups_.back()->setListener(listener_);
+        add(std::make_unique<Group>(service, 1001 + i, name, ownerId, mode))->setListener(listener_);
     }
 }
 
@@ -49,9 +57,9 @@ Group* GroupManager::createGroup(ServiceType service, const std::string& name, c
                                      GroupMode mode) {
     int maxNo = 1006;
     for (Group* g : groupsOfService(service)) maxNo = std::max(maxNo, g->groupNo());
-    groups_.push_back(std::make_unique<Group>(service, maxNo + 1, name, ownerId, mode));
-    groups_.back()->setListener(listener_);
-    return groups_.back().get();
+    Group* group = add(std::make_unique<Group>(service, maxNo + 1, name, ownerId, mode));
+    group->setListener(listener_);
+    return group;
 }
 
 bool GroupManager::remove(ServiceType service, int groupNo) {
@@ -59,6 +67,7 @@ bool GroupManager::remove(ServiceType service, int groupNo) {
         return g->service() == service && g->groupNo() == groupNo;
     });
     if (it == groups_.end()) return false;
+    byNo_.erase(key(service, groupNo));
     groups_.erase(it);
     return true;
 }
@@ -98,7 +107,7 @@ int GroupManager::load(const std::string& groupText, const std::string& subGroup
         repaired += group->loadData(Util::parseList(members), Util::parseList(admins), Util::parseList(pending),
                                     Util::parseList(muted));
         group->loadNotice(notice == "-" ? "" : notice);
-        groups_.push_back(std::move(group));
+        add(std::move(group));
     }
 
     std::istringstream subIn(subGroupText);

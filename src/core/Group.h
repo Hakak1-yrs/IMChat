@@ -1,6 +1,7 @@
 #pragma once
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include "GroupListener.h"
 #include "GroupPolicy.h"
@@ -69,6 +70,7 @@ public:
     void setListener(GroupListener* listener);   // 群操作成功后通知它（加载数据时不通知）
 
 private:
+    void addMember(const std::string& id);      // 成员只通过这两个函数增减，成员列表和下面的查找集合保持一致
     void removeMember(const std::string& id);   // 同时清除其管理员身份和讨论组成员身份，删除变空的讨论组
     void notify(GroupEvent event, const std::string& actor, const std::string& target = "");
     SubGroup* findSubGroup(const std::string& name);
@@ -77,7 +79,8 @@ private:
     int groupNo_;
     std::string name_;
     std::string ownerId_;
-    std::vector<std::string> members_;
+    std::vector<std::string> members_;               // 按加入的先后
+    std::unordered_set<std::string> memberSet_;      // 同样的成员，用来常数时间判断是不是成员（列出某人的群时对每个群都要判断）
     std::vector<std::string> admins_;
     std::vector<std::string> pending_;
     std::vector<std::string> muted_;

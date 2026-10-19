@@ -7,7 +7,7 @@ Group::Group(ServiceType service, int groupNo, const std::string& name,
     : service_(service), groupNo_(groupNo), name_(name), ownerId_(ownerId),
       policy_(GroupPolicy::create(mode)) {
     if (ownerId_ == "-") ownerId_.clear();          // 文件中用 "-" 表示无主群
-    if (!ownerId_.empty()) members_.push_back(ownerId_);   // 群主一定是群成员
+    if (!ownerId_.empty()) addMember(ownerId_);   // 群主一定是群成员
 }
 
 ServiceType Group::service() const { return service_; }
@@ -32,7 +32,12 @@ const std::vector<SubGroup>& Group::subGroups() const { return subGroups_; }
 
 const GroupPolicy& Group::policy() const { return *policy_; }
 
-bool Group::isMember(const std::string& id) const { return Util::contains(members_, id); }
+bool Group::isMember(const std::string& id) const { return memberSet_.count(id) > 0; }
+
+void Group::addMember(const std::string& id) {
+    members_.push_back(id);
+    memberSet_.insert(id);
+}
 
 bool Group::isOwner(const std::string& id) const { return !ownerId_.empty() && id == ownerId_; }
 
@@ -51,7 +56,7 @@ bool Group::applyJoin(const std::string& applicant, std::string& msg) {
     }
     if (!hasOwner()) {   // 原群主注销后无人接任的群，第一个加入的人认领为群主
         ownerId_ = applicant;
-        members_.push_back(applicant);
+        addMember(applicant);
         Util::removeValue(pending_, applicant);
         msg = "该群原群主已注销且无人接任，你已加入并成为新群主。";
         notify(GroupEvent::CLAIMED, applicant);
@@ -80,7 +85,7 @@ bool Group::approve(const std::string& op, const std::string& applicant, bool ac
         return false;
     }
     if (accept) {
-        members_.push_back(applicant);
+        addMember(applicant);
         msg = "已同意 " + applicant + " 入群。";
         notify(GroupEvent::APPROVED, op, applicant);
     } else {
@@ -99,7 +104,7 @@ bool Group::invite(const std::string& op, const std::string& invitee, std::strin
         return false;
     }
     Util::removeValue(pending_, invitee);
-    members_.push_back(invitee);
+    addMember(invitee);
     msg = "已推荐 " + invitee + " 加入群 " + std::to_string(groupNo_) + "。";
     notify(GroupEvent::INVITED, op, invitee);
     return true;
@@ -375,7 +380,7 @@ int Group::loadData(const std::vector<std::string>& members, const std::vector<s
     int repaired = 0;
     if (hasOwner() && !Util::contains(members, ownerId_)) ++repaired;   // 构造函数已把群主补进成员
     for (const std::string& m : members) {
-        if (!isMember(m)) members_.push_back(m);
+        if (!isMember(m)) addMember(m);
         else if (m != ownerId_) ++repaired;   // 重复的成员
     }
     for (const std::string& a : admins) {
@@ -414,6 +419,7 @@ bool Group::loadSubGroup(const SubGroup& subGroup) {
 
 void Group::removeMember(const std::string& id) {
     Util::removeValue(members_, id);
+    memberSet_.erase(id);
     Util::removeValue(admins_, id);
     Util::removeValue(muted_, id);
     for (SubGroup& s : subGroups_) s.removeMember(id);

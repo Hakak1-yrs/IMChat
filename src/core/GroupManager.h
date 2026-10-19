@@ -1,6 +1,7 @@
 #pragma once
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "Group.h"
 
@@ -34,6 +35,10 @@ public:
     void setListener(GroupListener* listener);
 
 private:
+    Group* add(std::unique_ptr<Group> group);   // 所有群都从这里加入，同时登记到 byNo_
+    static long long key(ServiceType service, int groupNo);
+
     std::vector<std::unique_ptr<Group>> groups_;
+    std::unordered_map<long long, Group*> byNo_;   // (服务, 群号) → 群：每条群消息都要按群号找群
     GroupListener* listener_ = nullptr;
 };

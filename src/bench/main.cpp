@@ -10,6 +10,7 @@
 //   IMChatBench social <目录> text|sqlite [记录数]  社交记录很多时发一条私信的耗时
 //   IMChatBench moments <目录> text|sqlite [动态数] 动态很多时看朋友圈、点赞的耗时
 //   IMChatBench friends <目录> [人数]               两两互为好友时联系人列表的耗时
+//   IMChatBench groups <目录> [群数]                群很多时找群、列出我的群、发群消息的耗时
 // 客户端用的是项目自己的网络库（EventLoop + TcpClient）：threads 个事件循环线程，每个线程负责一部分连接
 #include "EventLoop.h"   // 网络头文件（winsock2.h）必须在其他 Windows 头文件之前
 #include <algorithm>
@@ -461,6 +462,48 @@ int friendsBench(std::string dataDir, int users) {
     return 0;
 }
 
+// ======================== groups：群很多时找群、列出我的群 ========================
+
+int groupsBench(std::string dataDir, int groups) {
+    if (dataDir.back() != '/' && dataDir.back() != '\\') dataDir += '/';
+    std::error_code ec;
+    std::filesystem::remove_all(Util::pathOf(dataDir), ec);
+    Platform platform(dataDir);
+    std::string msg;
+    const int people = 200;
+    std::vector<ServiceBase*> accounts;
+    for (int i = 0; i < people; ++i)
+        accounts.push_back(platform.registerUser("用户" + std::to_string(i), ServiceType::QQ, "g" + std::to_string(i), Date(2000, 1, 1),
+                                                 "上海", "123456", msg));
+    // 每个群 50 人：群主轮流当，成员是群主后面的 49 个人
+    std::vector<int> numbers;
+    for (int i = 0; i < groups; ++i) {
+        ServiceBase* owner = accounts[static_cast<std::size_t>(i % people)];
+        Group* group = platform.createGroup(*owner, "群" + std::to_string(i), msg);
+        if (!group) {
+            std::cerr << "建群失败：" << msg << "\n";
+            return 1;
+        }
+        for (int k = 1; k < 50; ++k) group->invite(owner->id(), accounts[static_cast<std::size_t>((i + k) % people)]->id(), msg);
+        numbers.push_back(group->groupNo());
+    }
+    auto timeIt = [&](const char* name, int times, const std::function<void(int)>& step) {
+        const auto start = Clock::now();
+        for (int i = 0; i < times; ++i) step(i);
+        std::printf("  %-28s %10.2f 微秒/次\n", name, std::chrono::duration<double, std::micro>(Clock::now() - start).count() / times);
+    };
+    std::size_t mine = 0;
+    std::printf("%d 个群（每群 50 人）：\n", groups);
+    timeIt("按群号找群（groups().find）", 10000, [&](int i) { platform.groups().find(ServiceType::QQ, numbers[static_cast<std::size_t>(i) % numbers.size()]); });
+    timeIt("列出我所在的群（groupsOf）", 200, [&](int i) { mine = platform.groups().groupsOf(ServiceType::QQ, accounts[static_cast<std::size_t>(i % people)]->id()).size(); });
+    timeIt("发一条群消息（sendGroupMessage）", 1000, [&](int i) {
+        const Group* g = platform.groups().find(ServiceType::QQ, numbers[static_cast<std::size_t>(i) % numbers.size()]);
+        platform.sendGroupMessage(*platform.findAccount(ServiceType::QQ, g->ownerId()), *g, "压测", msg);
+    });
+    std::printf("  （每人约在 %zu 个群里）\n", mine);
+    return 0;
+}
+
 // ======================== moments：动态很多时看朋友圈、点赞 ========================
 
 int momentsBench(std::string dataDir, const std::string& kind, int posts) {
@@ -508,6 +551,7 @@ void usage() {
                  "  IMChatBench social <目录> text|sqlite [记录数=10000]   社交记录很多时发一条私信的耗时（目录会被清空）\n"
                  "  IMChatBench moments <目录> text|sqlite [动态数=10000]  动态很多时看朋友圈、点赞的耗时（目录会被清空）\n"
                  "  IMChatBench friends <目录> [人数=300]   两两互为好友时联系人列表的耗时（目录会被清空）\n"
+                 "  IMChatBench groups <目录> [群数=1000]   群很多时找群、列出我的群、发群消息的耗时（目录会被清空）\n"
                  "  IMChatBench run --data <数据目录> [--host 127.0.0.1] [--port 9000] [--clients 200] [--messages 100]\n"
                  "                  [--threads 4] [--window 1] [--group | --remark]\n";
 }
@@ -535,6 +579,7 @@ int main(int argc, char** argv) {
     }
     try {
         if (args[0] == "prepare" && args.size() >= 2) return prepare(args[1], args.size() >= 3 ? std::stoi(args[2]) : 200);
+        if (args[0] == "groups" && args.size() >= 2) return groupsBench(args[1], args.size() >= 3 ? std::stoi(args[2]) : 1000);
         if (args[0] == "friends" && args.size() >= 2) return friendsBench(args[1], args.size() >= 3 ? std::stoi(args[2]) : 300);
         if (args[0] == "moments" && args.size() >= 3) return momentsBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
         if (args[0] == "social" && args.size() >= 3) return socialBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
