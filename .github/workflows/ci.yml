@@ -38,7 +38,6 @@ jobs:
 
   windows-asan:
     runs-on: windows-latest
-    continue-on-error: true   # 新加入的任务，先不阻塞合并
     steps:
       - uses: actions/checkout@v5
 
@@ -71,8 +70,6 @@ jobs:
             sanitize: address,undefined
           - name: tsan
             sanitize: thread
-    # 消毒器任务刚加入，先不阻塞合并；普通的 gcc 编译和测试必须通过
-    continue-on-error: ${{ matrix.sanitize != '' }}
     env:
       ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
