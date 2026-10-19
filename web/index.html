@@ -1,0 +1,1042 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ededed">
+<title>IMChat</title>
+<!-- IMChat 网页客户端：手机、平板或者任何浏览器打开 IMChatServer 的地址（如 http://192.168.1.5:9000）即可使用。
+     与服务端之间用 WebSocket，每条 WebSocket 消息里装一帧和原生客户端完全相同的协议帧（docs/PROTOCOL.md）。
+     这个文件在构建时嵌进服务端程序，不依赖任何外部资源，局域网里没有外网也能用 -->
+<style>
+:root {
+  --accent: #1d9bf0;
+  --bg: #ededed;
+  --panel: #ffffff;
+  --text: #191919;
+  --muted: #8a8a8a;
+  --line: #e2e2e2;
+  --bubble: #ffffff;
+  --mine-text: #ffffff;
+  --danger: #fa5151;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .06);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111111;
+    --panel: #1e1e1e;
+    --text: #e8e8e8;
+    --muted: #8c8c8c;
+    --line: #2c2c2c;
+    --bubble: #2c2c2c;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; }
+body {
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overscroll-behavior: none;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.hidden { display: none !important; }
+
+#app { position: relative; height: 100dvh; max-width: 760px; margin: 0 auto; overflow: hidden; background: var(--bg); }
+@media (min-width: 800px) { #app { border-left: 1px solid var(--line); border-right: 1px solid var(--line); } }
+.screen { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
+
+/* ---- 顶栏 ---- */
+.bar {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  min-height: 52px; padding: env(safe-area-inset-top) 12px 0; background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.bar h1 { margin: 0; font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar .grow { flex: 1; min-width: 0; text-align: center; }
+.bar small { display: block; color: var(--muted); font-size: 12px; line-height: 1.2; }
+.bar .icon { width: 40px; height: 40px; border: 0; background: none; font-size: 26px; line-height: 1; padding: 0; }
+.net { font-size: 12px; color: var(--muted); }
+.net.bad { color: var(--danger); }
+
+/* ---- 登录 ---- */
+#login { justify-content: center; align-items: center; padding: 24px 16px; overflow-y: auto; }
+.card { width: 100%; max-width: 380px; background: var(--panel); border-radius: 14px; padding: 28px 22px; box-shadow: var(--shadow); }
+.logo { width: 64px; height: 64px; margin: 0 auto 10px; border-radius: 18px; background: var(--accent);
+  color: #fff; display: grid; place-items: center; font-size: 30px; font-weight: 700; }
+.card h2 { margin: 0 0 4px; text-align: center; font-size: 22px; }
+.card .sub { margin: 0 0 22px; text-align: center; color: var(--muted); font-size: 13px; }
+.services { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 14px; }
+.services button { border: 1px solid var(--line); background: none; border-radius: 8px; padding: 7px 0; font-size: 14px; }
+.services button.on { border-color: var(--accent); background: var(--accent); color: #fff; }
+.field { display: block; margin-bottom: 12px; }
+.field span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.field input { width: 100%; height: 44px; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px;
+  background: transparent; font-size: 16px; outline: none; }
+.field input:focus { border-color: var(--accent); }
+.primary { width: 100%; height: 46px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font-size: 16px; font-weight: 600; }
+.primary:disabled { opacity: .6; }
+.error { min-height: 20px; margin: 10px 0 0; color: var(--danger); font-size: 13px; text-align: center; }
+.hint { margin: 14px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
+
+/* ---- 列表 ---- */
+.page { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.list { list-style: none; margin: 0; padding: 0; background: var(--panel); }
+.list li { display: flex; align-items: center; gap: 12px; padding: 10px 14px; cursor: pointer; position: relative; }
+.list li + li::before { content: ""; position: absolute; top: 0; left: 70px; right: 0; border-top: 1px solid var(--line); }
+.list li:active { background: var(--line); }
+.avatar { flex: none; width: 46px; height: 46px; border-radius: 8px; display: grid; place-items: center;
+  color: #fff; font-size: 18px; font-weight: 600; position: relative; }
+.avatar.small { width: 38px; height: 38px; font-size: 15px; border-radius: 6px; }
+.avatar .dot { position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; border-radius: 50%;
+  background: #2ecc71; border: 2px solid var(--panel); }
+.item { flex: 1; min-width: 0; }
+.item .top { display: flex; align-items: baseline; gap: 8px; }
+.item .name { flex: 1; min-width: 0; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .time { flex: none; font-size: 12px; color: var(--muted); }
+.item .preview { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .preview b { color: var(--danger); font-weight: normal; }
+.badge { flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--danger);
+  color: #fff; font-size: 11px; line-height: 18px; text-align: center; font-style: normal; }
+.section { padding: 14px 14px 6px; font-size: 13px; color: var(--muted); }
+.empty { padding: 60px 20px; text-align: center; color: var(--muted); font-size: 14px; }
+
+/* ---- 底部标签 ---- */
+.tabs { flex: none; display: flex; background: var(--panel); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+.tabs button { flex: 1; height: 54px; border: 0; background: none; font-size: 13px; color: var(--muted); position: relative; }
+.tabs button .glyph { display: block; font-size: 20px; line-height: 24px; }
+.tabs button.on { color: var(--accent); }
+.tabs .badge { position: absolute; top: 4px; left: calc(50% + 8px); }
+
+/* ---- 我 ---- */
+.profile { display: flex; align-items: center; gap: 14px; padding: 22px 16px; background: var(--panel); margin-bottom: 10px; }
+.profile .avatar { width: 62px; height: 62px; font-size: 26px; border-radius: 10px; }
+.profile h3 { margin: 0 0 4px; font-size: 20px; }
+.profile p { margin: 0; color: var(--muted); font-size: 13px; }
+.rows { background: var(--panel); margin-bottom: 10px; }
+.rows div { display: flex; justify-content: space-between; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--line); font-size: 15px; }
+.rows div:last-child { border-bottom: 0; }
+.rows span:last-child { color: var(--muted); text-align: right; word-break: break-all; }
+.plain { display: block; width: 100%; height: 50px; border: 0; background: var(--panel); font-size: 16px; margin-bottom: 10px; }
+.plain.danger { color: var(--danger); }
+
+/* ---- 聊天 ---- */
+#chat { z-index: 2; }
+.notice { flex: none; padding: 8px 14px; font-size: 13px; background: var(--panel); border-bottom: 1px solid var(--line);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#messages { flex: 1; overflow-y: auto; padding: 8px 12px 14px; -webkit-overflow-scrolling: touch; }
+.stamp { text-align: center; color: var(--muted); font-size: 12px; margin: 14px 0 6px; }
+.tip { text-align: center; margin: 8px auto; max-width: 85%; color: var(--muted); font-size: 12px; }
+.tip span { display: inline-block; padding: 3px 8px; border-radius: 4px; background: rgba(127, 127, 127, .12); word-break: break-word; }
+.msg { display: flex; gap: 8px; margin: 10px 0; align-items: flex-start; }
+.msg.mine { flex-direction: row-reverse; }
+.msg .body { max-width: 72%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
+.msg.mine .body { align-items: flex-end; }
+.msg .who { font-size: 12px; color: var(--muted); margin: 0 2px 2px; }
+.bubble { padding: 9px 12px; border-radius: 8px; background: var(--bubble); box-shadow: var(--shadow);
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.msg.mine .bubble { background: var(--accent); color: var(--mine-text); }
+.msg.at .bubble { outline: 2px solid #f5a623; }
+.state { font-size: 11px; color: var(--muted); margin: 3px 2px 0; }
+.state.failed { color: var(--danger); cursor: pointer; }
+.composer { flex: none; display: flex; gap: 8px; align-items: flex-end; padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  background: var(--panel); border-top: 1px solid var(--line); }
+.composer textarea { flex: 1; min-height: 40px; max-height: 120px; resize: none; border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; background: var(--bg); font-size: 16px; line-height: 22px; outline: none; }
+.composer button { flex: none; height: 40px; padding: 0 16px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; }
+.composer button:disabled { opacity: .5; }
+.composer .blocked { flex: 1; text-align: center; color: var(--muted); font-size: 14px; line-height: 40px; }
+
+#toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); max-width: 80%; padding: 9px 16px;
+  border-radius: 8px; background: rgba(0, 0, 0, .78); color: #fff; font-size: 14px; z-index: 9;
+  opacity: 0; pointer-events: none; transition: opacity .2s; text-align: center; }
+#toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="app">
+  <section id="login" class="screen">
+    <form class="card" id="loginForm" autocomplete="on">
+      <div class="logo">IM</div>
+      <h2>IMChat</h2>
+      <p class="sub" id="serverLine"></p>
+      <div class="services" id="services"></div>
+      <label class="field"><span>账号</span><input id="account" name="username" autocomplete="username" inputmode="text" required></label>
+      <label class="field"><span>密码</span><input id="password" name="password" type="password" autocomplete="current-password" required></label>
+      <button class="primary" id="loginButton">登录</button>
+      <p class="error" id="loginError"></p>
+      <p class="hint">演示账号：QQ 10001～10006，微信 wx2001，密码都是 123456</p>
+    </form>
+  </section>
+
+  <section id="main" class="screen hidden">
+    <header class="bar"><div class="grow"><h1 id="mainTitle">消息</h1><small class="net" id="netState"></small></div></header>
+    <div class="page" id="tab-chats"><ul class="list" id="chatList"></ul><p class="empty hidden" id="chatsEmpty">还没有消息，去“联系人”里找个人聊聊吧</p></div>
+    <div class="page hidden" id="tab-contacts"></div>
+    <div class="page hidden" id="tab-me"></div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="chats" class="on"><span class="glyph">💬</span>消息<i class="badge hidden" id="totalBadge"></i></button>
+      <button data-tab="contacts"><span class="glyph">👥</span>联系人</button>
+      <button data-tab="me"><span class="glyph">👤</span>我</button>
+    </nav>
+  </section>
+
+  <section id="chat" class="screen hidden">
+    <header class="bar">
+      <button class="icon" id="back" aria-label="返回">‹</button>
+      <div class="grow"><h1 id="chatTitle"></h1><small id="chatSub"></small></div>
+      <span class="icon"></span>
+    </header>
+    <div class="notice hidden" id="groupNotice"></div>
+    <div id="messages"></div>
+    <form class="composer" id="composer">
+      <textarea id="input" rows="1" placeholder="发消息" enterkeyhint="send"></textarea>
+      <button id="sendButton">发送</button>
+    </form>
+  </section>
+</div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+// ---------------- 协议（docs/PROTOCOL.md） ----------------
+const T = {
+  PING: 1, PONG: 2, LOGIN_REQ: 100, LOGIN_RESP: 101, KICKED: 102,
+  SEND_MSG_REQ: 200, SEND_MSG_ACK: 201, MSG_PUSH: 202, SYNC_REQ: 300, SYNC_RESP: 301,
+  READ_REQ: 400, READ_RESP: 401, READ_RECEIPT: 402, CALL_REQ: 500, CALL_RESP: 501,
+  PRESENCE: 510, MSG_REVOKED: 511, DATA_CHANGED: 512, ERROR_RESP: 900,
+};
+const SERVICES = {
+  QQ: { name: 'QQ', accent: '#1d9bf0' },
+  WECHAT: { name: '微信', accent: '#07c160' },
+  WEIBO: { name: '微博', accent: '#e6162d' },
+  WEISHANG: { name: '微商', accent: '#f08a00' },
+};
+const HEARTBEAT_MS = 15000;   // 和原生客户端一样：15 秒一次心跳，45 秒没收到任何数据就认为连接已经失效
+const DEAD_MS = 45000;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const $ = id => document.getElementById(id);
+
+function save(key, value) {
+  try { value === undefined ? localStorage.removeItem(key) : localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* 隐私模式等 */ }
+}
+function restore(key) {
+  try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; }
+}
+
+// ---------------- 状态 ----------------
+const S = {
+  service: 'QQ',
+  me: '',
+  nickname: '',
+  location: '',
+  creds: null,          // 重连用的 {service, account, token}
+  session: false,       // 已经登录过（断线重连期间也为 true）
+  loggingIn: false,     // 正在登录页上用密码登录
+  kicked: false,
+  friends: new Map(),   // 账号 → {id, nickname, remark, online, location}
+  groups: new Map(),    // 群号 → 群
+  convs: new Map(),     // 'p:账号' / 'g:群号' → 会话
+  seen: new Set(),      // 已经收到的消息序号（推送和同步可能重叠，按序号去重）
+  syncedSeq: 0,         // 同步位置：这个序号以前的消息都已收到
+  maxSeq: 0,
+  syncing: false,
+  outbox: [],           // 待确认的消息，收到回执才移除；重连后按原顺序、原 clientMsgId 重发
+  current: null,        // 打开着的会话
+  tab: 'chats',
+};
+
+function resetData() {
+  S.friends = new Map(); S.groups = new Map(); S.convs = new Map(); S.seen = new Set();
+  S.syncedSeq = 0; S.maxSeq = 0; S.outbox = []; S.current = null;
+}
+
+function conv(key) {
+  let c = S.convs.get(key);
+  if (!c) {
+    c = { key, group: key[0] === 'g', id: key.slice(2), messages: [], myRead: 0, peerRead: 0 };
+    S.convs.set(key, c);
+  }
+  return c;
+}
+const keyOf = m => m.groupNo !== undefined ? 'g:' + m.groupNo : 'p:' + (m.from === S.me ? m.to : m.from);
+
+// ---------------- 连接 ----------------
+const net = { ws: null, nextReqId: 1, waiting: new Map(), lastReceive: 0, retries: 0, timer: 0, ready: false };
+
+function serverAddress() { return location.host || '127.0.0.1:9000'; }
+
+function connect() {
+  clearTimeout(net.timer);
+  if (net.ws) return;
+  setNetState('连接中…', false);
+  let ws;
+  try {
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + serverAddress() + '/ws');
+  } catch (e) {
+    onClosed(null);
+    return;
+  }
+  ws.binaryType = 'arraybuffer';
+  net.ws = ws;
+  ws.onopen = () => { net.lastReceive = Date.now(); login(); };
+  ws.onmessage = e => { net.lastReceive = Date.now(); if (e.data instanceof ArrayBuffer) receive(e.data); };
+  ws.onclose = () => onClosed(ws);
+}
+
+// 不等关闭握手：网络已经断了的连接，close 事件可能很久以后才来
+function dropSocket() {
+  const ws = net.ws;
+  if (!ws) return;
+  ws.onclose = null;
+  ws.onmessage = null;
+  try { ws.close(); } catch (e) { /* 已经关闭 */ }
+  onClosed(ws);
+}
+
+function onClosed(ws) {
+  if (ws && net.ws !== ws) return;
+  net.ws = null;
+  net.ready = false;
+  for (const w of net.waiting.values()) { clearTimeout(w.timer); w.reject(new Error('连接已断开')); }
+  net.waiting.clear();
+  if (S.loggingIn) {
+    S.loggingIn = false;
+    loginError('连不上服务器 ' + serverAddress() + '，请检查网络（手机和电脑要连同一个 Wi-Fi）');
+    return;
+  }
+  if (!S.session || S.kicked) return;
+  setNetState('未连接，正在重连…', true);
+  const delay = Math.min(30000, 500 * 2 ** net.retries++);   // 指数退避：0.5 秒起，最长 30 秒
+  net.timer = setTimeout(connect, delay);
+}
+
+// 帧：[4 字节长度][2 字节类型][JSON 正文]，大端
+function sendPacket(type, body) {
+  if (!net.ws || net.ws.readyState !== WebSocket.OPEN) return false;
+  const json = encoder.encode(JSON.stringify(body || {}));
+  const bytes = new Uint8Array(6 + json.length);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 2 + json.length);
+  view.setUint16(4, type);
+  bytes.set(json, 6);
+  net.ws.send(bytes);
+  return true;
+}
+
+function receive(buffer) {
+  const view = new DataView(buffer);
+  for (let offset = 0; offset + 6 <= buffer.byteLength;) {
+    const length = view.getUint32(offset);
+    const type = view.getUint16(offset + 4);
+    const raw = new Uint8Array(buffer, offset + 6, Math.max(0, length - 2));
+    offset += 4 + length;
+    let body = {};
+    try { if (raw.length) body = JSON.parse(decoder.decode(raw)); } catch (e) { continue; }
+    handle(type, body);
+  }
+}
+
+// 请求和响应靠 reqId 对应：同一条连接上可以同时有多个请求在等响应
+function request(type, body, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const reqId = net.nextReqId++;
+    if (!sendPacket(type, Object.assign({ reqId }, body))) { reject(new Error('还没有连上服务器')); return; }
+    const timer = setTimeout(() => { net.waiting.delete(reqId); reject(new Error('服务器没有响应')); }, timeoutMs);
+    net.waiting.set(reqId, { resolve, reject, timer });
+  });
+}
+
+async function call(op, args) {
+  const r = await request(T.CALL_REQ, { op, args: args || {} });
+  if (!r.ok) throw new Error(r.error || '操作失败');
+  return r.data || {};
+}
+
+function handle(type, body) {
+  const waiting = body.reqId !== undefined && net.waiting.get(body.reqId);
+  if (waiting) {
+    net.waiting.delete(body.reqId);
+    clearTimeout(waiting.timer);
+    if (type === T.ERROR_RESP) waiting.reject(new Error(body.message || '请求出错'));
+    else waiting.resolve(body);
+    return;
+  }
+  switch (type) {
+  case T.MSG_PUSH:
+    addMessage(body, true);
+    break;
+  case T.READ_RECEIPT: {
+    const c = conv('p:' + body.reader);
+    c.peerRead = Math.max(c.peerRead, body.seq || 0);
+    render();
+    break;
+  }
+  case T.PRESENCE: {
+    const f = S.friends.get(body.account);
+    if (f) { f.online = !!body.online; render(); }
+    break;
+  }
+  case T.MSG_REVOKED:
+    for (const c of S.convs.values()) {
+      const m = c.messages.find(x => x.seq === body.seq);
+      if (m) { m.revoked = true; m.revokedBy = body.revokedBy; m.text = ''; render(); break; }
+    }
+    break;
+  case T.DATA_CHANGED: {
+    const topics = body.topics || [];
+    if (topics.includes('contacts')) loadContacts().then(render, () => {});
+    if (topics.includes('groups')) loadGroups().then(render, () => {});
+    break;
+  }
+  case T.KICKED:
+    S.kicked = true;
+    logout('你的账号在别处登录了' + (body.reason ? '：' + body.reason : ''));
+    break;
+  case T.ERROR_RESP:
+    toast(body.message || '服务器报告了一个错误');
+    break;
+  default:
+    break;
+  }
+}
+
+// 心跳：定期发 PING；太久没收到任何数据就断开重连（比如手机切换了网络）
+setInterval(() => {
+  if (!net.ws || net.ws.readyState !== WebSocket.OPEN) return;
+  if (Date.now() - net.lastReceive > DEAD_MS) dropSocket();
+  else sendPacket(T.PING, {});
+}, HEARTBEAT_MS);
+
+// 手机浏览器切到后台时连接常被断掉：回到前台立即重连，不等退避
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (S.session && !S.kicked && !net.ws) { net.retries = 0; connect(); }
+  if (S.current) markRead(conv(S.current));
+});
+window.addEventListener('online', () => {
+  if (S.session && !S.kicked && !net.ws) { net.retries = 0; connect(); }
+});
+
+// ---------------- 登录 ----------------
+let pendingPassword = null;
+
+async function login() {
+  const creds = pendingPassword
+    ? { service: S.service, account: pendingPassword.account, password: pendingPassword.password }
+    : S.creds;
+  if (!creds) { dropSocket(); return; }
+  let r;
+  try { r = await request(T.LOGIN_REQ, creds); } catch (e) { return; }   // 连接断了：onClosed 负责
+  if (!r.ok) {
+    const reason = (r.error || '登录失败') + (r.retryAfter ? `（${r.retryAfter} 秒后再试）` : '');
+    if (S.loggingIn) {
+      S.loggingIn = false;
+      pendingPassword = null;
+      dropSocket();
+      loginError(reason);
+    } else if (r.retryAfter) {
+      dropSocket();   // 暂时锁定：按退避稍后再试
+    } else {
+      logout('登录已失效，请重新输入密码');   // 令牌过期或密钥被重置
+    }
+    return;
+  }
+  const first = S.loggingIn || !S.session;
+  const account = creds.account;
+  if (first && account !== S.me) resetData();
+  S.loggingIn = false;
+  resetLoginButton();
+  pendingPassword = null;   // 明文密码登录成功后就不再保存，之后凭令牌重连
+  S.session = true;
+  S.kicked = false;
+  S.me = account;
+  S.service = creds.service;
+  S.nickname = r.nickname || account;
+  S.location = r.location || '';
+  S.creds = { service: creds.service, account, token: r.token || (S.creds && S.creds.token) };
+  save('imchat.session', S.creds);
+  save('imchat.last', { service: creds.service, account });
+  net.retries = 0;
+  net.ready = true;
+  setNetState('', false);
+  applyAccent();
+  if (first) showMain();
+  S.syncing = true;
+  try {
+    await Promise.all([loadContacts(), loadGroups(), loadReads()]);
+    await sync();
+  } catch (e) {
+    return;   // 同步途中断线：重连后从同步位置继续
+  }
+  flushOutbox();
+  render();
+}
+
+// 同步：取同步位置之后的消息，hasMore 时从这一批最后一条继续要。
+// 途中推送来的更新的消息和当前这一批之间可能还缺着，所以同步途中同步位置只前进到每一批的末尾
+async function sync() {
+  S.syncing = true;
+  let after = S.syncedSeq;
+  while (true) {
+    const r = await request(T.SYNC_REQ, { afterSeq: after, limit: 200 });
+    const messages = r.messages || [];
+    for (const m of messages) addMessage(m, false);
+    if (messages.length) after = messages[messages.length - 1].seq;
+    S.syncedSeq = Math.max(S.syncedSeq, after);
+    if (!r.hasMore || !messages.length) break;
+  }
+  S.syncing = false;
+  S.syncedSeq = Math.max(S.syncedSeq, S.maxSeq);
+}
+
+async function loadContacts() {
+  const data = await call('contacts.list');
+  S.friends = new Map((data.friends || []).map(f => [f.id, f]));
+}
+
+async function loadGroups() {
+  const data = await call('groups.list');
+  S.groups = new Map((data.groups || []).map(g => [String(g.groupNo), g]));
+}
+
+async function loadReads() {
+  const data = await call('reads.get');
+  for (const [peer, seq] of Object.entries(data.private || {})) conv('p:' + peer).myRead = Math.max(conv('p:' + peer).myRead, seq);
+  for (const [peer, seq] of Object.entries(data.peerRead || {})) conv('p:' + peer).peerRead = Math.max(conv('p:' + peer).peerRead, seq);
+  for (const [no, seq] of Object.entries(data.groups || {})) conv('g:' + no).myRead = Math.max(conv('g:' + no).myRead, seq);
+}
+
+function logout(message) {
+  S.session = false;
+  S.loggingIn = false;
+  pendingPassword = null;
+  clearTimeout(net.timer);
+  dropSocket();
+  save('imchat.session', undefined);
+  S.creds = null;
+  resetData();
+  $('chat').classList.add('hidden');
+  $('main').classList.add('hidden');
+  $('login').classList.remove('hidden');
+  $('password').value = '';
+  loginError(message || '');
+}
+
+// ---------------- 消息 ----------------
+function addMessage(m, pushed) {
+  if (typeof m.seq !== 'number') return;
+  if (S.seen.has(m.seq)) return;
+  S.seen.add(m.seq);
+  S.maxSeq = Math.max(S.maxSeq, m.seq);
+  if (!S.syncing) S.syncedSeq = Math.max(S.syncedSeq, m.seq);
+  const c = conv(keyOf(m));
+  const list = c.messages;
+  let i = list.length;
+  while (i > 0 && list[i - 1].seq > m.seq) i--;   // 按序号插入：推送和同步交错到达时也保持顺序
+  list.splice(i, 0, m);
+  if (pushed && m.from !== S.me && S.current !== c.key && navigator.vibrate) {
+    try { navigator.vibrate(30); } catch (e) { /* 不支持 */ }
+  }
+  if (S.current === c.key) markRead(c);
+  render();
+}
+
+function newClientMsgId() {
+  return 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
+function sendText(key, text) {
+  const c = conv(key);
+  const item = { clientMsgId: newClientMsgId(), key, text, state: 'sending', time: nowText() };
+  if (c.group) item.groupNo = Number(c.id); else item.to = c.id;
+  S.outbox.push(item);
+  render(true);
+  if (net.ready) transmit(item);
+}
+
+function transmit(item) {
+  const body = { clientMsgId: item.clientMsgId, text: item.text };
+  if (item.groupNo !== undefined) body.groupNo = item.groupNo; else body.to = item.to;
+  request(T.SEND_MSG_REQ, body).then(ack => {
+    if (ack.ok) {
+      S.outbox = S.outbox.filter(x => x !== item);
+      const m = { seq: ack.seq, service: S.service, from: S.me, text: item.text, time: ack.time || item.time };
+      if (item.groupNo !== undefined) m.groupNo = item.groupNo; else m.to = item.to;
+      addMessage(m, false);
+    } else if (ack.retryable) {
+      setTimeout(() => { if (net.ready && S.outbox.includes(item)) transmit(item); }, 1000);   // 发得太快被限流：稍后用同一个编号重发
+    } else {
+      item.state = 'failed';
+      item.error = ack.error || '发送失败';
+      toast(item.error);
+      render();
+    }
+  }, () => { /* 断线：留在队列里，重连后重发 */ });
+}
+
+function flushOutbox() {
+  for (const item of S.outbox) if (item.state === 'sending') transmit(item);
+}
+
+function markRead(c) {
+  if (document.visibilityState !== 'visible') return;
+  const last = c.messages.length ? c.messages[c.messages.length - 1].seq : 0;
+  if (last <= c.myRead) return;
+  c.myRead = last;
+  if (net.ready) request(T.READ_REQ, c.group ? { groupNo: Number(c.id), seq: last } : { peer: c.id, seq: last }).catch(() => {});
+  render();
+}
+
+function unreadOf(c) {
+  let n = 0;
+  for (let i = c.messages.length - 1; i >= 0 && c.messages[i].seq > c.myRead; i--) if (c.messages[i].from !== S.me) n++;
+  return n;
+}
+
+function mentionedIn(c) {
+  for (let i = c.messages.length - 1; i >= 0 && c.messages[i].seq > c.myRead; i--) {
+    if ((c.messages[i].mentions || []).includes(S.me)) return true;
+  }
+  return false;
+}
+
+async function revoke(m) {
+  if (!confirm('撤回这条消息？')) return;
+  try { await call('message.revoke', { seq: m.seq }); } catch (e) { toast(e.message); return; }
+  m.revoked = true; m.revokedBy = S.me; m.text = '';
+  render();
+}
+
+function canRevoke(c, m) {
+  if (m.revoked || m.system) return false;
+  if (m.from === S.me) return true;
+  const g = c.group && S.groups.get(c.id);
+  return !!(g && (g.revocable || []).includes(m.from));
+}
+
+// ---------------- 显示 ----------------
+function nameOf(id, groupNo) {
+  if (id === S.me) return S.nickname || id;
+  const f = S.friends.get(id);
+  if (f) return f.remark || f.nickname || id;
+  const groups = groupNo !== undefined ? [S.groups.get(String(groupNo))] : S.groups.values();
+  for (const g of groups) {
+    const member = g && (g.members || []).find(x => x.id === id);
+    if (member) return member.nickname || id;
+  }
+  return id;
+}
+
+function titleOf(c) {
+  if (!c.group) return nameOf(c.id);
+  const g = S.groups.get(c.id);
+  return g ? g.name : '群 ' + c.id;
+}
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function nowText() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function parseTime(text) {
+  const d = new Date(String(text || '').replace(' ', 'T'));
+  return isNaN(d.getTime()) ? null : d;
+}
+function sameDay(a, b) { return a.toDateString() === b.toDateString(); }
+function listTime(text) {
+  const d = parseTime(text);
+  if (!d) return '';
+  const now = new Date();
+  if (sameDay(d, now)) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  if (sameDay(d, yesterday)) return '昨天';
+  return d.getFullYear() === now.getFullYear() ? `${d.getMonth() + 1}/${d.getDate()}` : `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+}
+function stampTime(text) {
+  const d = parseTime(text);
+  if (!d) return text || '';
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const day = listTime(text);
+  return day.includes(':') ? hm : `${day} ${hm}`;
+}
+
+function el(tag, className, text) {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+// 头像底色：从一组彼此差别明显的颜色里按账号挑（连续色相的话，相邻账号的颜色太接近）
+const AVATAR_COLORS = ['#e8615a', '#f0a03c', '#d4b23a', '#5cb85c', '#2fb5a8', '#3d9be9', '#5b6ee1', '#9b6bd6', '#d0679d', '#8d8d8d'];
+function avatar(name, id, small, online) {
+  let hash = 0;
+  for (const ch of String(id)) hash = Math.imul(hash ^ ch.codePointAt(0), 2654435761);
+  hash ^= hash >>> 15;   // 再充分打散一次：10001 和 10002 只差最后一位，颜色也要差得开
+  hash = Math.imul(hash, 0x2c1b3c6d);
+  hash = (hash ^ (hash >>> 12)) >>> 0;
+  const a = el('div', 'avatar' + (small ? ' small' : ''), Array.from(name || '?')[0]);
+  a.style.background = AVATAR_COLORS[hash % AVATAR_COLORS.length];
+  if (online) a.appendChild(el('i', 'dot'));
+  return a;
+}
+
+function previewOf(c, last) {
+  if (last.revoked) return `${last.from === S.me ? '你' : nameOf(last.from, last.groupNo)} 撤回了一条消息`;
+  if (last.system || !c.group) return last.text;
+  return `${last.from === S.me ? '我' : nameOf(last.from, last.groupNo)}：${last.text}`;
+}
+
+let renderQueued = false;
+let scrollToEnd = false;
+function render(toEnd) {
+  if (toEnd) scrollToEnd = true;
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    renderChats();
+    if (S.tab === 'contacts') renderContacts();
+    if (S.tab === 'me') renderMe();
+    if (S.current) renderChat();
+  });
+}
+
+function renderChats() {
+  const rows = [];
+  let total = 0;
+  for (const c of S.convs.values()) {
+    const pending = S.outbox.filter(x => x.key === c.key);
+    const last = c.messages[c.messages.length - 1];
+    if (!last && !pending.length) continue;
+    const lastPending = pending[pending.length - 1];
+    const unread = unreadOf(c);
+    total += unread;
+    rows.push({ c, last, lastPending, unread, order: lastPending ? Infinity : last.seq });
+  }
+  rows.sort((a, b) => b.order - a.order);
+  const list = $('chatList');
+  list.textContent = '';
+  for (const { c, last, lastPending, unread } of rows) {
+    const li = el('li');
+    li.appendChild(avatar(titleOf(c), c.key, false, !c.group && S.friends.get(c.id) && S.friends.get(c.id).online));
+    const item = el('div', 'item');
+    const top = el('div', 'top');
+    top.appendChild(el('span', 'name', titleOf(c)));
+    top.appendChild(el('span', 'time', listTime(lastPending ? lastPending.time : last.time)));
+    item.appendChild(top);
+    const preview = el('div', 'preview');
+    if (unread && mentionedIn(c)) preview.appendChild(el('b', '', '[有人@我] '));
+    if (lastPending) preview.appendChild(document.createTextNode((lastPending.state === 'failed' ? '[发送失败] ' : '[发送中] ') + lastPending.text));
+    else preview.appendChild(document.createTextNode(previewOf(c, last)));
+    item.appendChild(preview);
+    li.appendChild(item);
+    if (unread) li.appendChild(el('i', 'badge', unread > 99 ? '99+' : String(unread)));
+    li.onclick = () => openChat(c.key);
+    list.appendChild(li);
+  }
+  $('chatsEmpty').classList.toggle('hidden', rows.length > 0);
+  const badge = $('totalBadge');
+  badge.textContent = total > 99 ? '99+' : String(total);
+  badge.classList.toggle('hidden', total === 0);
+  document.title = total ? `(${total}) IMChat` : 'IMChat';
+}
+
+function renderContacts() {
+  const page = $('tab-contacts');
+  page.textContent = '';
+  const groups = [...S.groups.values()];
+  if (groups.length) {
+    page.appendChild(el('div', 'section', `群聊（${groups.length}）`));
+    const ul = el('ul', 'list');
+    for (const g of groups) {
+      const li = el('li');
+      li.appendChild(avatar(g.name, 'g:' + g.groupNo));
+      const item = el('div', 'item');
+      item.appendChild(el('div', 'name', g.name));
+      item.appendChild(el('div', 'preview', `${(g.members || []).length} 人 · ${g.modeName || ''}群 · 群号 ${g.groupNo}`));
+      li.appendChild(item);
+      li.onclick = () => openChat('g:' + g.groupNo);
+      ul.appendChild(li);
+    }
+    page.appendChild(ul);
+  }
+  const friends = [...S.friends.values()].sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0));
+  page.appendChild(el('div', 'section', `好友（${friends.length}，在线 ${friends.filter(f => f.online).length}）`));
+  if (!friends.length) page.appendChild(el('p', 'empty', '还没有好友'));
+  const ul = el('ul', 'list');
+  for (const f of friends) {
+    const li = el('li');
+    const name = f.remark || f.nickname || f.id;
+    li.appendChild(avatar(name, 'p:' + f.id, false, f.online));
+    const item = el('div', 'item');
+    item.appendChild(el('div', 'name', name));
+    item.appendChild(el('div', 'preview', [f.online ? '在线' : '离线', f.id, f.location].filter(Boolean).join(' · ')));
+    li.appendChild(item);
+    li.onclick = () => openChat('p:' + f.id);
+    ul.appendChild(li);
+  }
+  page.appendChild(ul);
+}
+
+function renderMe() {
+  const page = $('tab-me');
+  page.textContent = '';
+  const profile = el('div', 'profile');
+  profile.appendChild(avatar(S.nickname, 'p:' + S.me));
+  const info = el('div');
+  info.appendChild(el('h3', '', S.nickname));
+  info.appendChild(el('p', '', `${SERVICES[S.service] ? SERVICES[S.service].name : S.service} 账号：${S.me}`));
+  profile.appendChild(info);
+  page.appendChild(profile);
+  const rows = el('div', 'rows');
+  const row = (label, value) => {
+    const div = el('div');
+    div.appendChild(el('span', '', label));
+    div.appendChild(el('span', '', value));
+    rows.appendChild(div);
+  };
+  row('所在地', S.location || '未填写');
+  row('服务器', serverAddress());
+  row('连接', net.ready ? 'WebSocket 已连接' : '未连接');
+  page.appendChild(rows);
+  const statsBox = el('div', 'rows hidden');
+  const statsButton = el('button', 'plain', '查看服务器运行状态');
+  statsButton.onclick = async () => {
+    try {
+      const s = await call('server.stats');
+      statsBox.textContent = '';
+      const items = [['运行时间', `${Math.floor(s.uptimeSeconds / 60)} 分钟`], ['I/O 线程', s.ioThreads], ['当前连接', s.connections],
+        ['在线账号', s.online], ['累计登录', s.logins], ['保存的消息', s.messages], ['推送', s.pushes], ['限流拒绝', s.rateLimited]];
+      for (const [label, value] of items) {
+        const div = el('div');
+        div.appendChild(el('span', '', label));
+        div.appendChild(el('span', '', String(value)));
+        statsBox.appendChild(div);
+      }
+      statsBox.classList.remove('hidden');
+    } catch (e) { toast(e.message); }
+  };
+  page.appendChild(statsButton);
+  page.appendChild(statsBox);
+  const out = el('button', 'plain danger', '退出登录');
+  out.onclick = () => { if (confirm('退出登录？')) logout(''); };
+  page.appendChild(out);
+}
+
+function renderChat() {
+  const c = conv(S.current);
+  const g = c.group ? S.groups.get(c.id) : null;
+  const f = c.group ? null : S.friends.get(c.id);
+  $('chatTitle').textContent = titleOf(c);
+  $('chatSub').textContent = !net.ready ? '未连接，正在重连…'
+    : g ? `${(g.members || []).length} 人` : f ? (f.online ? '在线' : '离线') : c.group ? '' : '不是好友';
+  const notice = $('groupNotice');
+  notice.textContent = g && g.notice ? '📢 ' + g.notice : '';
+  notice.classList.toggle('hidden', !(g && g.notice));
+
+  const box = $('messages');
+  const nearEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  box.textContent = '';
+  let lastTime = null;
+  const stamp = time => {
+    const d = parseTime(time);
+    if (d && (!lastTime || d - lastTime > 5 * 60 * 1000)) box.appendChild(el('div', 'stamp', stampTime(time)));
+    if (d) lastTime = d;
+  };
+  let lastMine = null;
+  for (const m of c.messages) if (m.from === S.me && !m.revoked && !m.system) lastMine = m;
+  for (const m of c.messages) {
+    stamp(m.time);
+    if (m.system || m.revoked) {
+      const tip = el('div', 'tip');
+      tip.appendChild(el('span', '', m.revoked ? `${m.revokedBy === S.me ? '你' : nameOf(m.revokedBy || m.from, m.groupNo)} 撤回了一条消息` : m.text));
+      box.appendChild(tip);
+      continue;
+    }
+    const mine = m.from === S.me;
+    const extra = !c.group && mine && m === lastMine ? (c.peerRead >= m.seq ? '已读' : '未读') : '';
+    box.appendChild(messageRow(c, m, mine, extra));
+  }
+  for (const item of S.outbox) {
+    if (item.key !== c.key) continue;
+    stamp(item.time);
+    const row = messageRow(c, { from: S.me, text: item.text }, true, item.state === 'failed' ? '⚠ 发送失败，点这里重发' : '发送中…');
+    if (item.state === 'failed') {
+      row.querySelector('.state').classList.add('failed');
+      row.querySelector('.state').onclick = () => { item.state = 'sending'; render(); if (net.ready) transmit(item); };
+    }
+    box.appendChild(row);
+  }
+  if (nearEnd || scrollToEnd) box.scrollTop = box.scrollHeight;
+  scrollToEnd = false;
+
+  const composer = $('composer');
+  const blocked = c.group ? (!g ? '你已不在这个群里' : g.canSpeak === false ? '你已被禁言' : '') : '';
+  composer.querySelector('.blocked') && composer.querySelector('.blocked').remove();
+  $('input').classList.toggle('hidden', !!blocked);
+  $('sendButton').classList.toggle('hidden', !!blocked);
+  if (blocked) composer.appendChild(el('div', 'blocked', blocked));
+}
+
+function messageRow(c, m, mine, state) {
+  const row = el('div', 'msg' + (mine ? ' mine' : '') + ((m.mentions || []).includes(S.me) ? ' at' : ''));
+  row.appendChild(avatar(nameOf(m.from, m.groupNo), 'p:' + m.from, true));
+  const body = el('div', 'body');
+  if (c.group && !mine) body.appendChild(el('div', 'who', nameOf(m.from, m.groupNo)));
+  const bubble = el('div', 'bubble', m.text);
+  body.appendChild(bubble);
+  if (state) body.appendChild(el('div', 'state', state));
+  row.appendChild(body);
+  if (m.seq && canRevoke(c, m)) {   // 长按（或右键）撤回
+    let timer = 0;
+    bubble.addEventListener('contextmenu', e => { e.preventDefault(); revoke(m); });
+    bubble.addEventListener('touchstart', () => { timer = setTimeout(() => { timer = 0; revoke(m); }, 600); }, { passive: true });
+    const cancel = () => { clearTimeout(timer); timer = 0; };
+    bubble.addEventListener('touchend', cancel);
+    bubble.addEventListener('touchmove', cancel, { passive: true });
+  }
+  return row;
+}
+
+function setNetState(text, bad) {
+  const node = $('netState');
+  node.textContent = text;
+  node.classList.toggle('bad', !!bad);
+  if (S.current) render();
+}
+
+function applyAccent() {
+  const accent = (SERVICES[S.service] || SERVICES.QQ).accent;
+  document.documentElement.style.setProperty('--accent', accent);
+}
+
+let toastTimer = 0;
+function toast(text) {
+  const node = $('toast');
+  node.textContent = text;
+  node.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => node.classList.remove('show'), 2400);
+}
+
+// ---------------- 页面切换 ----------------
+function showMain() {
+  $('login').classList.add('hidden');
+  $('main').classList.remove('hidden');
+  switchTab(S.tab);
+}
+
+function switchTab(tab) {
+  S.tab = tab;
+  for (const name of ['chats', 'contacts', 'me']) $('tab-' + name).classList.toggle('hidden', name !== tab);
+  for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('on', b.dataset.tab === tab);
+  $('mainTitle').textContent = { chats: '消息', contacts: '联系人', me: '我' }[tab];
+  render();
+}
+
+function openChat(key) {
+  conv(key);
+  const wasOpen = !!S.current;
+  S.current = key;
+  $('chat').classList.remove('hidden');
+  if (!wasOpen) history.pushState({ chat: key }, '');   // 手机的返回键 / 返回手势关闭聊天
+  $('messages').textContent = '';
+  render(true);
+  markRead(conv(key));
+}
+
+function closeChat() {
+  S.current = null;
+  $('chat').classList.add('hidden');
+  $('input').blur();
+  render();
+}
+
+window.addEventListener('popstate', () => { if (S.current) closeChat(); });
+$('back').onclick = () => { if (history.state && history.state.chat) history.back(); else closeChat(); };
+$('tabs').onclick = e => { const b = e.target.closest('button'); if (b) switchTab(b.dataset.tab); };
+
+$('composer').onsubmit = e => {
+  e.preventDefault();
+  const input = $('input');
+  const text = input.value.trim();
+  if (!text || !S.current) return;
+  input.value = '';
+  autosize();
+  sendText(S.current, text);
+  if (!net.ready) toast('暂时没有连上服务器，连上后会自动发出');
+};
+$('input').addEventListener('keydown', e => {
+  // 回车发送，Shift+回车换行；输入法选字时的回车不算
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); $('sendButton').click(); }
+});
+// 点“发送”时不让输入框失去焦点：手机上键盘不会收起，可以接着打字
+$('sendButton').addEventListener('mousedown', e => e.preventDefault());
+function autosize() {
+  const input = $('input');
+  input.style.height = 'auto';
+  input.style.height = Math.min(120, input.scrollHeight + 2) + 'px';
+}
+$('input').addEventListener('input', autosize);
+
+// ---------------- 登录页 ----------------
+function resetLoginButton() {
+  $('loginButton').disabled = false;
+  $('loginButton').textContent = '登录';
+}
+function loginError(text) {
+  $('loginError').textContent = text;
+  resetLoginButton();
+}
+
+function renderServices() {
+  const box = $('services');
+  box.textContent = '';
+  for (const [code, info] of Object.entries(SERVICES)) {
+    const b = el('button', code === S.service ? 'on' : '', info.name);
+    b.type = 'button';
+    b.onclick = () => { S.service = code; applyAccent(); renderServices(); };
+    box.appendChild(b);
+  }
+}
+
+$('loginForm').onsubmit = e => {
+  e.preventDefault();
+  const account = $('account').value.trim();
+  const password = $('password').value;
+  if (!account || !password) return;
+  loginError('');
+  $('loginButton').disabled = true;
+  $('loginButton').textContent = '登录中…';
+  S.loggingIn = true;
+  S.kicked = false;
+  pendingPassword = { account, password };
+  dropSocket();
+  connect();
+};
+
+(function start() {
+  $('serverLine').textContent = '服务器 ' + serverAddress();
+  const last = restore('imchat.last');
+  if (last && SERVICES[last.service]) { S.service = last.service; $('account').value = last.account || ''; }
+  applyAccent();
+  renderServices();
+  const session = restore('imchat.session');
+  if (session && session.token && SERVICES[session.service]) {   // 上次没退出：凭令牌直接登录
+    S.creds = session;
+    S.service = session.service;
+    S.me = session.account;
+    S.session = true;
+    showMain();
+    connect();
+  }
+})();
+</script>
+</body>
+</html>

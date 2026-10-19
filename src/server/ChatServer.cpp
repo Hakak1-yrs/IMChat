@@ -15,6 +15,7 @@
 #include "User.h"
 #include "ServiceType.h"
 #include "Util.h"
+#include "WebTransport.h"
 
 namespace {
 
@@ -161,7 +162,11 @@ void ChatServer::removeSession(const TcpConnection::Ptr& connection) {
     if (wentOffline) notifyPresence(accountKey, false);
 }
 
-void ChatServer::onMessage(const TcpConnection::Ptr& connection, Buffer& buffer) {
+void ChatServer::onMessage(const TcpConnection::Ptr& connection, Buffer& input) {
+    // 浏览器的连接先拆掉 WebSocket 这一层，得到和原生连接一样的协议帧字节流
+    Buffer* stream = WebTransport::unwrap(connection, input);
+    if (!stream) return;
+    Buffer& buffer = *stream;
     // 一次可能收到多帧（粘包），逐帧切出来；剩下不足一帧的数据留在缓冲区里等下次（半包）。
     // 解析失败的帧记为空，交给业务线程回复错误
     std::vector<std::optional<Packet>> packets;
@@ -987,7 +992,7 @@ ServiceBase* ChatServer::accountOf(const Session& session) const {
 
 void ChatServer::deliver(const TcpConnection::Ptr& connection, std::string bytes) {
     if (!useOutbox_) {   // 单线程且存储不批量提交：连接就在本线程，直接发（会在本轮结束时合并写出）
-        connection->send(std::move(bytes));
+        WebTransport::send(connection, std::move(bytes));
         return;
     }
     deliverShared(connection, std::make_shared<const std::string>(std::move(bytes)));
@@ -995,7 +1000,7 @@ void ChatServer::deliver(const TcpConnection::Ptr& connection, std::string bytes
 
 void ChatServer::deliverShared(const TcpConnection::Ptr& connection, const std::shared_ptr<const std::string>& bytes) {
     if (!useOutbox_) {
-        connection->send(bytes->data(), bytes->size());
+        WebTransport::send(connection, bytes->data(), bytes->size());
         return;
     }
     enqueue(Outgoing{ connection, bytes, nullptr });
@@ -1026,7 +1031,7 @@ void ChatServer::scheduleFlush() {
 
 void ChatServer::Outgoing::run() const {
     // 在连接自己的线程里执行：发送时直接从共享的数据追加到输出缓冲区，只复制这一次
-    if (bytes) connection->send(bytes->data(), bytes->size());
+    if (bytes) WebTransport::send(connection, bytes->data(), bytes->size());
     else action();
 }
 

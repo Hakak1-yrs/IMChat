@@ -110,7 +110,15 @@ if(WIN32)
 endif()
 
 # ---- server ----
-add_library(imchat_server STATIC src/server/ChatServer.cpp src/server/ChatServer.h src/server/LoginToken.cpp src/server/LoginToken.h)
+# The browser client (web/index.html) is compiled into the server, which serves it on its own port.
+set(WEB_PAGE_SOURCE ${CMAKE_BINARY_DIR}/generated/WebPage.cpp)
+add_custom_command(OUTPUT ${WEB_PAGE_SOURCE}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${CMAKE_SOURCE_DIR}/web/index.html -DOUTPUT=${WEB_PAGE_SOURCE} -DNAME=kWebPage
+            -P ${CMAKE_SOURCE_DIR}/cmake/EmbedFile.cmake
+    DEPENDS ${CMAKE_SOURCE_DIR}/web/index.html ${CMAKE_SOURCE_DIR}/cmake/EmbedFile.cmake
+    COMMENT "Embedding web/index.html")
+add_library(imchat_server STATIC src/server/ChatServer.cpp src/server/ChatServer.h src/server/LoginToken.cpp src/server/LoginToken.h
+            src/server/WebTransport.cpp src/server/WebTransport.h src/server/WebPage.h ${WEB_PAGE_SOURCE})
 target_include_directories(imchat_server PUBLIC src/server)
 target_link_libraries(imchat_server PUBLIC imchat_reactor imchat_protocol imchat_core)
 add_executable(IMChatServer src/server/main.cpp)
@@ -152,12 +160,12 @@ if(IMCHAT_BUILD_UNIT_TESTS)
     gtest_discover_tests(IMChatUnitTests WORKING_DIRECTORY ${CMAKE_BINARY_DIR} DISCOVERY_MODE PRE_TEST)
     # The same server and client integration tests again, with the server running 3 I/O threads.
     add_test(NAME IMChatUnitTests.MultiThreadedServer
-             COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*
+             COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*:WebSocketServerTest.*
              WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
     set_tests_properties(IMChatUnitTests.MultiThreadedServer PROPERTIES ENVIRONMENT IMCHAT_TEST_IO_THREADS=3)
     # ...and once more with messages stored in SQLite instead of the text log.
     add_test(NAME IMChatUnitTests.SqliteStorage
-             COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*
+             COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*:WebSocketServerTest.*
              WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
     set_tests_properties(IMChatUnitTests.SqliteStorage PROPERTIES ENVIRONMENT IMCHAT_TEST_STORAGE=sqlite)
 endif()
