@@ -11,6 +11,10 @@ EventLoop::EventLoop() : poller_(Poller::create()), threadId_(std::this_thread::
 }
 
 EventLoop::~EventLoop() {
+    // 别的线程唤醒本循环（quit、投递任务）时，写唤醒套接字是在 mutex_ 里完成的。
+    // 这里先拿到锁再关闭：保证不会一边关闭、另一边还在往里写（ThreadSanitizer 报出的竞争：
+    // 别的线程调用 quit() 刚把标志置上、还没写完，事件循环线程就已经退出并销毁了这个对象）
+    std::lock_guard<std::mutex> lock(mutex_);
     SocketOps::close(wakeupRead_);
     SocketOps::close(wakeupWrite_);
 }
@@ -37,6 +41,9 @@ void EventLoop::loop() {
 }
 
 void EventLoop::quit() {
+    // 置标志和唤醒都在锁里：事件循环线程看到标志、退出、析构时要先拿这把锁，
+    // 所以本函数写完唤醒字节之前，这个对象不会被销毁
+    std::lock_guard<std::mutex> lock(mutex_);
     quit_ = true;
     if (!isInLoopThread()) wakeup();
 }
@@ -61,15 +68,14 @@ void EventLoop::runInLoop(Task task) {
 }
 
 void EventLoop::queueInLoop(Task task) {
-    bool wasEmpty = false;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        wasEmpty = pending_.empty();
-        pending_.push_back(std::move(task));
-    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool wasEmpty = pending_.empty();
+    pending_.push_back(std::move(task));
     // 事件循环线程自己投递的任务本轮结束时就会执行，不必唤醒；其他线程投递的必须唤醒。
     // 队列原来就不空时也不必再唤醒：事件循环每次进入等待之前都会在锁内检查队列，不空就不等待；
-    // 而队列从空变为不空的那一次已经唤醒过它。多线程大量互相投递任务时，省掉了绝大部分唤醒用的系统调用
+    // 而队列从空变为不空的那一次已经唤醒过它。多线程大量互相投递任务时，省掉了绝大部分唤醒用的系统调用。
+    // 唤醒也在锁里完成（非阻塞写，很快）：投递的任务可能就是让循环退出、销毁自己（如 ChatClient::stop），
+    // 循环线程要先拿锁才能取出任务，所以唤醒写完之前对象不会被销毁
     if (!isInLoopThread() && wasEmpty) wakeup();
 }
 
