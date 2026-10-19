@@ -42,6 +42,8 @@ public:
     std::vector<Message> conversation(ServiceType service, const std::string& a, const std::string& b) const override;
     std::vector<Message> groupHistory(ServiceType service, int groupNo) const override;
     std::vector<Message> messagesFor(ServiceType service, const std::string& me, const std::vector<int>& groupNos) const override;
+    std::vector<Message> messagesAfter(ServiceType service, const std::string& me, const std::vector<int>& groupNos,
+                                       int afterSeq, std::size_t limit) const override;
     bool findMessage(ServiceType service, int seq, Message& out) const override;
     bool lastFrom(ServiceType service, const std::string& sender, Message& out) const override;
     std::map<std::string, int> unreadPrivate(ServiceType service, const std::string& me) const override;

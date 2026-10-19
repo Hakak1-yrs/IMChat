@@ -93,6 +93,28 @@ TEST_P(MessageStoreTest, QueriesFilterAndOrderMessages) {
     EXPECT_EQ(s.messagesFor(ServiceType::QQ, "10002", {}).size(), 2u);
 }
 
+TEST_P(MessageStoreTest, MessagesAfterReturnsOnlyTheNextPage) {
+    MessageStore& s = *store_;
+    s.postPrivate(ServiceType::QQ, "10001", "10002", "1");   // 1
+    s.postGroup(ServiceType::QQ, 1002, "10003", "别的群");    // 2：不是我的群
+    s.postGroup(ServiceType::QQ, 1001, "10003", "3");        // 3
+    s.postPrivate(ServiceType::WECHAT, "10001", "10002", "别的服务");   // 4
+    s.postPrivate(ServiceType::QQ, "10003", "10001", "5");   // 5
+    s.postPrivate(ServiceType::QQ, "10002", "10003", "别人的私信");      // 6
+    s.postGroup(ServiceType::QQ, 1001, "10001", "7");        // 7
+    auto texts = [](const std::vector<Message>& list) {
+        std::string joined;
+        for (const Message& m : list) joined += m.text();
+        return joined;
+    };
+    EXPECT_EQ(texts(s.messagesAfter(ServiceType::QQ, "10001", { 1001 }, 0, 0)), "1357");
+    EXPECT_EQ(texts(s.messagesAfter(ServiceType::QQ, "10001", { 1001 }, 0, 2)), "13");
+    EXPECT_EQ(texts(s.messagesAfter(ServiceType::QQ, "10001", { 1001 }, 3, 2)), "57");
+    EXPECT_EQ(texts(s.messagesAfter(ServiceType::QQ, "10001", { 1001 }, 4, 1)), "5");
+    EXPECT_EQ(texts(s.messagesAfter(ServiceType::QQ, "10001", { 1001 }, 7, 0)), "");
+    EXPECT_EQ(texts(s.messagesAfter(ServiceType::QQ, "10001", {}, 1, 0)), "5");   // 没有群：只有私信
+}
+
 TEST_P(MessageStoreTest, RevokeUnreadAndReadMarks) {
     MessageStore& s = *store_;
     s.postPrivate(ServiceType::QQ, "10002", "10001", "一");       // 1

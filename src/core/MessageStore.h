@@ -31,6 +31,10 @@ public:
     virtual std::vector<Message> groupHistory(ServiceType service, int groupNo) const = 0;
     // 与 me 有关的全部消息：me 收发的私信，以及 groupNos 这些群中的群消息
     virtual std::vector<Message> messagesFor(ServiceType service, const std::string& me, const std::vector<int>& groupNos) const = 0;
+    // 同上，但只要序号大于 afterSeq 的前 limit 条（limit 为 0 表示不限）：客户端增量同步用，
+    // 不必每次把这个人的全部历史读出来再丢掉已有的部分
+    virtual std::vector<Message> messagesAfter(ServiceType service, const std::string& me, const std::vector<int>& groupNos,
+                                               int afterSeq, std::size_t limit) const = 0;
     virtual bool findMessage(ServiceType service, int seq, Message& out) const = 0;
     // sender 最近发的一条消息（刚保存的那条：拿到它的序号和时间）
     virtual bool lastFrom(ServiceType service, const std::string& sender, Message& out) const = 0;

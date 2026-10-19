@@ -302,10 +302,11 @@ int storeBench(std::string dataDir, const std::string& kind, int count) {
     if (kind == "sqlite") store = std::make_unique<SqliteMessageStore>(dataDir + "store_bench.db");
     else store = std::make_unique<MessageCenter>(dataDir + "store_bench.txt");
     Message last(0, ServiceType::QQ, false, "", "", "", "");
-    auto timeIt = [&](const char* name, const std::function<void(int)>& step) {
+    auto timeIt = [&](const char* name, const std::function<void(int)>& step, int times = 0) {
+        if (times == 0) times = count;
         const auto start = Clock::now();
-        for (int i = 0; i < count; ++i) step(i);
-        const double us = std::chrono::duration<double, std::micro>(Clock::now() - start).count() / count;
+        for (int i = 0; i < times; ++i) step(i);
+        const double us = std::chrono::duration<double, std::micro>(Clock::now() - start).count() / times;
         std::printf("  %-28s %8.1f 微秒/次\n", name, us);
     };
     std::printf("%s，%d 次：\n", kind == "sqlite" ? "SQLite" : "文本日志", count);
@@ -317,6 +318,18 @@ int storeBench(std::string dataDir, const std::string& kind, int count) {
         store->postPrivate(ServiceType::QQ, "10001", "10002", "压测 " + std::to_string(i));
         store->lastFrom(ServiceType::QQ, "10001", last);
     });
+    // 客户端重连后的增量同步：只差最后 20 条。旧做法读出全部历史再跳过，新做法只读需要的部分
+    store->lastFrom(ServiceType::QQ, "10001", last);
+    const int afterSeq = last.seq() - 20;
+    const std::size_t total = store->messagesFor(ServiceType::QQ, "10002", { 1001 }).size();
+    std::printf("  （同步：这个人共有 %zu 条消息，只差最后 20 条）\n", total);
+    timeIt("同步：全部读出再跳过", [&](int) {
+        std::size_t n = 0;
+        for (const Message& m : store->messagesFor(ServiceType::QQ, "10002", { 1001 })) n += m.seq() > afterSeq;
+    }, 100);
+    timeIt("同步：只读之后的（messagesAfter）", [&](int) {
+        store->messagesAfter(ServiceType::QQ, "10002", { 1001 }, afterSeq, 201);
+    }, 100);
     return 0;
 }
 

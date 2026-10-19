@@ -442,16 +442,26 @@ std::vector<Message> SqliteMessageStore::groupHistory(ServiceType service, int g
 }
 
 std::vector<Message> SqliteMessageStore::messagesFor(ServiceType service, const std::string& me, const std::vector<int>& groupNos) const {
+    return messagesAfter(service, me, groupNos, 0, 0);
+}
+
+std::vector<Message> SqliteMessageStore::messagesAfter(ServiceType service, const std::string& me, const std::vector<int>& groupNos,
+                                                       int afterSeq, std::size_t limit) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::string sql = std::string(kMessageColumns) + "WHERE service = ?1 AND ((is_group = 0 AND (sender = ?2 OR target = ?2))";
-    if (!groupNos.empty()) sql += " OR (is_group = 1 AND target IN (" + groupList(groupNos) + "))";
-    sql += ") ORDER BY seq";
+    // 每个分支都带上 service 和 seq 条件，SQLite 才能对每个分支分别走索引（OR 优化），
+    // 只读 afterSeq 之后的部分，而不是先把这个人的全部消息读出来
+    std::string sql = std::string(kMessageColumns) +
+        "WHERE (service = ?1 AND sender = ?2 AND is_group = 0 AND seq > ?3)"
+        " OR (service = ?1 AND is_group = 0 AND target = ?2 AND seq > ?3)";
+    if (!groupNos.empty()) sql += " OR (service = ?1 AND is_group = 1 AND target IN (" + groupList(groupNos) + ") AND seq > ?3)";
+    sql += " ORDER BY seq LIMIT ?4";
     // 群号组合因人而异，这条语句不进缓存，用完即释放
     sqlite3_stmt* raw = nullptr;
     if (!db_ || sqlite3_prepare_v2(db_, sql.c_str(), static_cast<int>(sql.size()), &raw, nullptr) != SQLITE_OK) return {};
     std::unique_ptr<sqlite3_stmt, int (*)(sqlite3_stmt*)> owner(raw, sqlite3_finalize);
     Query query(raw);
-    query.bind(1, ServiceTypeHelper::code(service)).bind(2, me);
+    query.bind(1, ServiceTypeHelper::code(service)).bind(2, me).bind(3, afterSeq)
+         .bind(4, limit == 0 ? -1LL : static_cast<long long>(limit));   // LIMIT -1 表示不限
     return collect(query);
 }
 

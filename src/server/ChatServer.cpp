@@ -1,4 +1,6 @@
 #include "ChatServer.h"
+#include <algorithm>
+#include <climits>
 #include <cstdlib>
 #include <optional>
 #include <set>
@@ -467,17 +469,14 @@ void ChatServer::handleSync(Session& session, const json& request) {
 
     std::vector<int> groupNos;
     for (const Group* group : platform_.groups().groupsOf(me->type(), me->id())) groupNos.push_back(group->groupNo());
+    // 只取 afterSeq 之后的 limit + 1 条：多出来的那一条说明还有，剩下的让客户端接着要
+    std::vector<Message> found = platform_.messages().messagesAfter(
+        me->type(), me->id(), groupNos, static_cast<int>(std::clamp<long long>(afterSeq, 0, INT_MAX)),
+        static_cast<std::size_t>(limit) + 1);
+    const bool hasMore = found.size() > static_cast<std::size_t>(limit);
+    if (hasMore) found.pop_back();
     json messages = json::array();
-    bool hasMore = false;
-    // messagesFor 按序号从小到大排列：跳过已经有的，最多取 limit 条，剩下的让客户端接着要
-    for (const Message& m : platform_.messages().messagesFor(me->type(), me->id(), groupNos)) {
-        if (m.seq() <= afterSeq) continue;
-        if (static_cast<long long>(messages.size()) == limit) {
-            hasMore = true;
-            break;
-        }
-        messages.push_back(messageJson(m));
-    }
+    for (const Message& m : found) messages.push_back(messageJson(m));
     json response = reply(request);
     response["messages"] = std::move(messages);
     response["hasMore"] = hasMore;

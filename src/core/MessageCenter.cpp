@@ -104,14 +104,24 @@ std::vector<Message> MessageCenter::groupHistory(ServiceType service, int groupN
 
 std::vector<Message> MessageCenter::messagesFor(ServiceType service, const std::string& me,
                                                     const std::vector<int>& groupNos) const {
+    return messagesAfter(service, me, groupNos, 0, 0);
+}
+
+std::vector<Message> MessageCenter::messagesAfter(ServiceType service, const std::string& me, const std::vector<int>& groupNos,
+                                                  int afterSeq, std::size_t limit) const {
     std::set<std::string> wanted;
     for (int no : groupNos) wanted.insert(std::to_string(no));
     std::lock_guard<std::mutex> lock(mutex_);
+    const State& state = refresh();
     std::vector<Message> result;
-    for (const auto& [seq, m] : refresh().messages) {
+    // 按序号有序：直接从 afterSeq 之后开始，取够就停
+    for (auto it = state.messages.upper_bound(afterSeq); it != state.messages.end(); ++it) {
+        const Message& m = it->second;
         if (m.service() != service) continue;
         bool mine = m.isGroup() ? wanted.count(m.target()) > 0 : (m.sender() == me || m.target() == me);
-        if (mine) result.push_back(m);
+        if (!mine) continue;
+        result.push_back(m);
+        if (limit != 0 && result.size() == limit) break;
     }
     return result;
 }
