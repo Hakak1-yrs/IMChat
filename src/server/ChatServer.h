@@ -36,6 +36,7 @@ public:
         // 另开的 I/O 线程数。为 0 时接受连接、收发和业务处理都在一个线程里；
         // 大于 0 时收发、切帧、解析 JSON 在 I/O 线程里做，业务处理仍在一个线程里（Platform 不需要加锁）
         int ioThreads = 0;
+        std::size_t maxConnections = 0;   // 连接数上限，满了以后新连接立即关闭；0 表示不限
         // 每条连接发消息的速率上限（令牌桶）：每秒 messageRate 条，允许短时间突发 messageBurst 条；0 表示不限制
         double messageRate = 0;
         int messageBurst = 0;

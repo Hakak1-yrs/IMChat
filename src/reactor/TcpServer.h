@@ -28,15 +28,20 @@ public:
     void setMessageCallback(TcpConnection::MessageCallback callback);  // 收到数据
     void setCloseCallback(TcpConnection::CloseCallback callback);      // 连接关闭
     void setThreadCount(int count);                                     // I/O 线程数，必须在 listen 之前设置
+    // 连接数上限（0 表示不限）：满了以后新连接接受后立即关闭，而不是一直排在系统的队列里。
+    // 防止大量连接（恶意的或者客户端出错）耗尽文件描述符和内存
+    void setMaxConnections(std::size_t count);
 
     bool listen(const std::string& ip, std::uint16_t port, std::string& error);   // port 为 0 时由系统分配
     // 关闭所有连接（不再回调）并停止 I/O 线程；在主循环线程里调用。析构时会自动调用
     void stop();
     std::uint16_t port() const;
     std::size_t connectionCount() const;
+    std::uint64_t rejectedCount() const;   // 因为连接数已满而拒绝的连接数（主循环线程里读）
 
 private:
     void handleAccept();
+    void pauseAccepting();   // accept 持续出错（如文件描述符用完）：暂停一会儿再接，避免事件循环空转
     void removeConnection(const TcpConnection::Ptr& connection);
     EventLoop& nextLoop();
 
@@ -45,6 +50,9 @@ private:
     std::uint16_t port_ = 0;
     std::uint64_t nextId_ = 1;
     int threadCount_ = 0;
+    std::size_t maxConnections_ = 0;
+    std::uint64_t rejected_ = 0;
+    bool acceptPaused_ = false;
     std::vector<std::unique_ptr<EventLoopThread>> threads_;
     std::size_t nextThread_ = 0;
     std::unordered_map<std::uint64_t, TcpConnection::Ptr> connections_;   // 只在主循环线程里访问

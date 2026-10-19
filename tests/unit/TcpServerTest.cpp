@@ -150,5 +150,38 @@ TEST_P(EchoFixture, ConnectionsAreSpreadOverIoThreads) {
     for (SocketHandle c : clients) SocketOps::close(c);
 }
 
+TEST_P(EchoFixture, ConnectionsBeyondTheLimitAreClosedImmediately) {
+    thread_->call([this] {
+        server_->setMaxConnections(2);
+        return 0;
+    });
+    SocketHandle a = SocketOps::connectTcp("127.0.0.1", port_);
+    SocketHandle b = SocketOps::connectTcp("127.0.0.1", port_);
+    ASSERT_NE(a, kInvalidSocket);
+    ASSERT_NE(b, kInvalidSocket);
+    sendAll(a, "a");
+    sendAll(b, "b");
+    ASSERT_EQ(receiveExactly(a, 1, 2s), "a");
+    ASSERT_EQ(receiveExactly(b, 1, 2s), "b");
+
+    // 第三条：TCP 连接能建立（系统替服务端完成了握手），但服务端接受后立即关闭，对方读到 EOF
+    SocketHandle c = SocketOps::connectTcp("127.0.0.1", port_);
+    ASSERT_NE(c, kInvalidSocket);
+    EXPECT_EQ(receiveExactly(c, 1, 2s), "");
+    EXPECT_TRUE(eventually([&] { return thread_->call([this] { return server_->rejectedCount(); }) == 1; }));
+    SocketOps::close(c);
+
+    sendAll(a, "still");   // 已有的连接不受影响
+    EXPECT_EQ(receiveExactly(a, 5, 2s), "still");
+    SocketOps::close(b);   // 关掉一条后，又能接受新连接了
+    EXPECT_TRUE(eventually([&] { return connectionCount() == 1; }));
+    SocketHandle d = SocketOps::connectTcp("127.0.0.1", port_);
+    ASSERT_NE(d, kInvalidSocket);
+    sendAll(d, "d");
+    EXPECT_EQ(receiveExactly(d, 1, 2s), "d");
+    SocketOps::close(a);
+    SocketOps::close(d);
+}
+
 INSTANTIATE_TEST_SUITE_P(IoThreads, EchoFixture, ::testing::Values(0, 4),
                          [](const ::testing::TestParamInfo<int>& info) { return info.param == 0 ? std::string("SingleLoop") : "FourIoThreads"; });

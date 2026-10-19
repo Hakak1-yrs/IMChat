@@ -106,6 +106,7 @@ bool ChatServer::start(std::string& error) {
     server_.setMessageCallback([this](const TcpConnection::Ptr& c, Buffer& b) { onMessage(c, b); });
     server_.setCloseCallback([this](const TcpConnection::Ptr& c) { onClose(c); });
     server_.setThreadCount(options_.ioThreads);
+    server_.setMaxConnections(options_.maxConnections);
     // 存储支持批量提交（SQLite）时打开：本轮的写入合并成一个事务，在本轮的待办任务里提交
     batchedStore_ = platform_.messages().setCommitScheduler([this](std::function<void()> task) { loop_.queueInLoop(std::move(task)); });
     useOutbox_ = options_.ioThreads > 0 || batchedStore_;
@@ -439,6 +440,7 @@ json ChatServer::statsJson() const {
     return json{ { "uptimeSeconds", uptime },
                  { "ioThreads", options_.ioThreads },
                  { "connections", sessions_.size() },
+                 { "rejectedConnections", server_.rejectedCount() },
                  { "online", online_.size() },
                  { "logins", stats_.logins },
                  { "messages", stats_.messages },

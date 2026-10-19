@@ -16,6 +16,10 @@ void TcpServer::setCloseCallback(TcpConnection::CloseCallback callback) { onClos
 
 void TcpServer::setThreadCount(int count) { threadCount_ = count > 0 ? count : 0; }
 
+void TcpServer::setMaxConnections(std::size_t count) { maxConnections_ = count; }
+
+std::uint64_t TcpServer::rejectedCount() const { return rejected_; }
+
 bool TcpServer::listen(const std::string& ip, std::uint16_t port, std::string& error) {
     listener_ = SocketOps::listenTcp(ip, port, SOMAXCONN, port_, error);
     if (listener_ == kInvalidSocket) return false;
@@ -75,8 +79,18 @@ void TcpServer::handleAccept() {
         if (socket == kInvalidSocket) {
             const int error = SocketOps::lastError();
             if (SocketOps::interrupted(error)) continue;
-            if (!SocketOps::wouldBlock(error)) Log::warn("accept 失败：" + SocketOps::errorText(error));
+            if (!SocketOps::wouldBlock(error)) {
+                // 典型的是文件描述符用完（EMFILE）：那条连接还排在队列里，监听套接字一直可读，
+                // 立即返回的话下一轮又会失败，事件循环空转、日志刷屏
+                Log::warn("accept 失败：" + SocketOps::errorText(error) + "，暂停 100 毫秒");
+                pauseAccepting();
+            }
             return;
+        }
+        if (maxConnections_ != 0 && connections_.size() >= maxConnections_) {   // 满了：接受后立即关闭，对方马上知道连不上
+            SocketOps::close(socket);
+            if (rejected_++ % 1000 == 0) Log::warn("连接数已达上限 " + std::to_string(maxConnections_) + "，拒绝新连接");
+            continue;
         }
         if (!SocketOps::setNonBlocking(socket)) {
             SocketOps::close(socket);
@@ -94,6 +108,18 @@ void TcpServer::handleAccept() {
             connection->start();
         });
     }
+}
+
+void TcpServer::pauseAccepting() {
+    if (acceptPaused_) return;
+    acceptPaused_ = true;
+    loop_.unwatch(listener_);
+    std::weak_ptr<char> alive = alive_;
+    loop_.runAfter(std::chrono::milliseconds(100), [this, alive] {
+        if (!alive.lock()) return;
+        acceptPaused_ = false;
+        if (listener_ != kInvalidSocket) loop_.watch(listener_, IO_READ, [this](unsigned) { handleAccept(); });
+    });
 }
 
 void TcpServer::removeConnection(const TcpConnection::Ptr& connection) {

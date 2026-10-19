@@ -1,4 +1,4 @@
-// IMChat 服务端。用法：IMChatServer [--port 9000] [--data 数据目录] [--io-threads N] [--rate-limit N] [--storage text|sqlite] [--idle-timeout 秒] [--verbose]
+// IMChat 服务端。用法：IMChatServer [--port 9000] [--data 数据目录] [--io-threads N] [--rate-limit N] [--storage text|sqlite] [--idle-timeout 秒] [--max-connections N] [--verbose]
 #include "ChatServer.h"   // 网络头文件（winsock2.h）必须在其他 Windows 头文件之前
 #include <csignal>
 #include <filesystem>
@@ -64,7 +64,7 @@ std::string loadTokenSecret(const std::string& dataDir) {
 }
 
 void printUsage() {
-    std::cout << "用法：IMChatServer [--port 端口，默认 9000] [--data 数据目录] [--io-threads I/O 线程数，默认 2，0 表示单线程] [--rate-limit 每条连接每秒最多发几条，默认 20，0 表示不限] [--storage 消息存储 text 或 sqlite，默认 text] [--idle-timeout 秒，默认 90] [--verbose]\n";
+    std::cout << "用法：IMChatServer [--port 端口，默认 9000] [--data 数据目录] [--io-threads I/O 线程数，默认 2，0 表示单线程] [--rate-limit 每条连接每秒最多发几条，默认 20，0 表示不限] [--storage 消息存储 text 或 sqlite，默认 text] [--idle-timeout 秒，默认 90] [--max-connections 连接数上限，默认 10000，0 表示不限] [--verbose]\n";
 }
 
 }  // namespace
@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
     options.ioThreads = 2;   // 压测中 2 个 I/O 线程时私信吞吐最高，再多没有收益（见 docs/BENCHMARK.md）
     options.messageRate = 20;   // 正常聊天远远用不到；突发 50 条足够断线重连后补发积压的消息
     options.messageBurst = 50;
+    options.maxConnections = 10000;   // 足够正常使用；挡住连接洪水耗尽文件描述符
     std::string dataDir;
     Platform::Storage storage = Platform::Storage::TEXT;
     const std::vector<std::string> args = arguments(argc, argv);
@@ -89,6 +90,7 @@ int main(int argc, char** argv) {
             else if (args[i] == "--storage" && hasValue && (args[i + 1] == "text" || args[i + 1] == "sqlite"))
                 storage = args[++i] == "sqlite" ? Platform::Storage::SQLITE : Platform::Storage::TEXT;
             else if (args[i] == "--rate-limit" && hasValue) options.messageRate = std::stod(args[++i]);
+            else if (args[i] == "--max-connections" && hasValue) options.maxConnections = static_cast<std::size_t>(std::stoul(args[++i]));
             else if (args[i] == "--idle-timeout" && hasValue) options.idleTimeout = std::chrono::seconds(std::stoi(args[++i]));
             else if (args[i] == "--verbose") Log::setLevel(Log::Level::DEBUG);
             else {

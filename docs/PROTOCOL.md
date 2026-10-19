@@ -87,7 +87,7 @@
 | `group.create` | `{name}` | `{groupNo, message}` |
 | `group.exec` | `{kind, groupNo, target, text, on, members}` | `{message}`：群管理命令，`kind` 见下表 |
 
-| `server.stats` | — | `{uptimeSeconds, ioThreads, connections, online, logins, messages, pushes, calls, rateLimited, loginLockouts, dataSaves, dedupAccounts}`：服务端运行统计，命令行客户端的 `/stats`（`dataSaves` 是保存好友、群数据文件的次数，同一轮里的多次修改只保存一次；`dedupAccounts` 是保留着消息去重表的账号数） |
+| `server.stats` | — | `{uptimeSeconds, ioThreads, connections, rejectedConnections, online, logins, messages, pushes, calls, rateLimited, loginLockouts, dataSaves, dedupAccounts}`：服务端运行统计，命令行客户端的 `/stats`（`dataSaves` 是保存好友、群数据文件的次数，同一轮里的多次修改只保存一次；`dedupAccounts` 是保留着消息去重表的账号数，`rejectedConnections` 是因为连接数已满而拒绝的连接数） |
 | `moments.list` | `{author?}` | `{moments: [{seq, author, scope, time, text, likes, comments: [{seq, author, replyTo, time, text}]}], names: {账号: 昵称}}`：我能看到的动态，最新的在前 |
 | `moments.notices` | — | `{all: [文字…], unread: [文字…]}`：别人给我的点赞、评论、回复 |
 | `moments.markRead` | — | `{}` |
