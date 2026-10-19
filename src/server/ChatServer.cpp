@@ -148,6 +148,9 @@ void ChatServer::removeSession(const TcpConnection::Ptr& connection) {
         if (online != online_.end() && online->second == connection->id()) {
             online_.erase(online);
             wentOffline = true;
+            // 去重表从下线这一刻起计时：客户端重连后还会重发没收到回执的消息
+            auto recent = recent_.find(session.accountKey);
+            if (recent != recent_.end()) recent->second.lastUsed = std::chrono::steady_clock::now();
         }
         Log::info(session.accountKey + " 下线");
     }
@@ -310,9 +313,10 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
         return;
     }
     RecentMessages& recent = recent_[session.accountKey];
+    recent.lastUsed = std::chrono::steady_clock::now();
     auto seen = recent.acks.find(clientMsgId);
     if (seen != recent.acks.end()) {   // 重发的消息：返回第一次的回执，不再保存一遍
-        json ack = seen->second;
+        json ack = { { "clientMsgId", clientMsgId }, { "ok", true }, { "seq", seen->second.seq }, { "time", seen->second.time } };
         ack.update(reply(request));
         send(session.connection, MessageType::SEND_MSG_ACK, ack);
         return;
@@ -357,7 +361,7 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
     ack["ok"] = true;
     ack["seq"] = saved->seq();
     ack["time"] = saved->time();
-    recent.acks[clientMsgId] = ack;
+    recent.acks[clientMsgId] = SavedAck{ saved->seq(), saved->time() };
     recent.order.push_back(clientMsgId);
     if (recent.order.size() > kRecentLimit) {
         recent.acks.erase(recent.order.front());
@@ -442,7 +446,8 @@ json ChatServer::statsJson() const {
                  { "calls", stats_.calls },
                  { "rateLimited", stats_.rateLimited },
                  { "loginLockouts", stats_.loginLockouts },
-                 { "dataSaves", stats_.dataSaves } };
+                 { "dataSaves", stats_.dataSaves },
+                 { "dedupAccounts", recent_.size() } };
 }
 
 void ChatServer::logStats() {
@@ -1069,6 +1074,11 @@ void ChatServer::closeIdleConnections() {
     for (auto it = throttles_.begin(); it != throttles_.end();) {
         const bool stale = it->second.lockedUntil <= now && now - it->second.windowStart > options_.loginWindow;
         it = stale ? throttles_.erase(it) : std::next(it);
+    }
+    // 还有离线太久的账号的消息去重表
+    for (auto it = recent_.begin(); it != recent_.end();) {
+        const bool stale = !isOnline(it->first) && now - it->second.lastUsed > options_.recentTtl;
+        it = stale ? recent_.erase(it) : std::next(it);
     }
     std::vector<TcpConnection::Ptr> idle;   // 先收集再关闭：关闭会从 sessions_ 中删除，不能边遍历边删
     for (const auto& entry : sessions_) {

@@ -87,7 +87,7 @@
 | `group.create` | `{name}` | `{groupNo, message}` |
 | `group.exec` | `{kind, groupNo, target, text, on, members}` | `{message}`：群管理命令，`kind` 见下表 |
 
-| `server.stats` | — | `{uptimeSeconds, ioThreads, connections, online, logins, messages, pushes, calls, rateLimited, loginLockouts, dataSaves}`：服务端运行统计，命令行客户端的 `/stats`（`dataSaves` 是保存好友、群数据文件的次数，同一轮里的多次修改只保存一次） |
+| `server.stats` | — | `{uptimeSeconds, ioThreads, connections, online, logins, messages, pushes, calls, rateLimited, loginLockouts, dataSaves, dedupAccounts}`：服务端运行统计，命令行客户端的 `/stats`（`dataSaves` 是保存好友、群数据文件的次数，同一轮里的多次修改只保存一次；`dedupAccounts` 是保留着消息去重表的账号数） |
 | `moments.list` | `{author?}` | `{moments: [{seq, author, scope, time, text, likes, comments: [{seq, author, replyTo, time, text}]}], names: {账号: 昵称}}`：我能看到的动态，最新的在前 |
 | `moments.notices` | — | `{all: [文字…], unread: [文字…]}`：别人给我的点赞、评论、回复 |
 | `moments.markRead` | — | `{}` |
@@ -171,7 +171,7 @@
 
 服务端：
 
-- **去重**：每条消息由客户端生成唯一的 `clientMsgId`。服务端会记住每个账号最近 256 条消息的回执；遇到重复的 `clientMsgId`，直接返回第一次的回执，不会再保存一遍，也不会再推送给对方。
+- **去重**：每条消息由客户端生成唯一的 `clientMsgId`。服务端会记住每个账号最近 256 条消息的回执（序号和时间）；遇到重复的 `clientMsgId`，直接返回第一次的回执，不会再保存一遍，也不会再推送给对方。账号下线 30 分钟后释放它的去重表（客户端重连后会立即重发没收到回执的消息，用不了这么久），否则服务端运行越久内存越多。
 - **序号**：`seq` 是消息在服务端全局递增的序号，可以用来排序，也可以作为同步的位置。
 - **离线消息**：对方不在线时，消息照常保存，对方上线后用 `SYNC_REQ` 取到。
 

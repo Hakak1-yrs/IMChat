@@ -960,6 +960,40 @@ TEST_F(ChatServerTest, SocialChangesAreSavedBeforeTheReplyAndBatchedPerRound) {
     EXPECT_NE(TestServer::readText(friendsFile).find("QQ 10001 10002 备注50"), std::string::npos);   // 最后一次修改也已保存
 }
 
+TEST_F(ChatServerTest, DedupTableSurvivesReconnectAndIsReleasedAfterLongOffline) {
+    ChatServer::Options options;
+    options.recentTtl = 300ms;
+    options.idleCheckInterval = 50ms;
+    startServer(options);
+    auto ackOf = [](TestClient& client) {
+        while (std::optional<Packet> packet = client.receive()) {
+            if (packet->type == MessageType::SEND_MSG_ACK) return packet->body;
+        }
+        return json();
+    };
+    int firstSeq = 0;
+    {
+        TestClient zhang(port_);
+        ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+        zhang.send(MessageType::SEND_MSG_REQ, sendRequest("dedup-1", "10002", "只保存一次"));
+        firstSeq = ackOf(zhang).value("seq", 0);
+        ASSERT_GT(firstSeq, 0);
+    }   // 断线
+    {   // 很快重连并重发（客户端没收到回执时就是这样）：返回原来的回执，不再保存
+        TestClient zhang(port_);
+        ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+        zhang.send(MessageType::SEND_MSG_REQ, sendRequest("dedup-1", "10002", "只保存一次"));
+        EXPECT_EQ(ackOf(zhang).value("seq", 0), firstSeq);
+        pushes.clear();
+        EXPECT_EQ(call(zhang, "server.stats")["data"]["dedupAccounts"], 1);
+    }
+    std::this_thread::sleep_for(700ms);   // 离线超过 recentTtl：去重表释放
+    TestClient li(port_);
+    ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    pushes.clear();
+    EXPECT_EQ(call(li, "server.stats")["data"]["dedupAccounts"], 0);
+}
+
 TEST_F(ChatServerTest, RepeatedWrongPasswordsLockTheAccountForAWhile) {
     ChatServer::Options options;
     options.maxLoginFailures = 5;

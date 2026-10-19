@@ -43,6 +43,9 @@ public:
         int maxLoginFailures = 5;
         std::chrono::milliseconds loginWindow{ 5 * 60 * 1000 };
         std::chrono::milliseconds loginLockout{ 60 * 1000 };
+        // 消息去重表：账号离线超过这么久就释放（客户端断线重连后会立即重发没收到回执的消息，远用不了这么久）。
+        // 否则服务端运行越久，发过消息的账号越多，内存只增不减
+        std::chrono::milliseconds recentTtl{ 30 * 60 * 1000 };
     };
 
     ChatServer(EventLoop& loop, Platform& platform, Options options);
@@ -78,10 +81,15 @@ private:
         std::chrono::steady_clock::time_point windowStart{};
         std::chrono::steady_clock::time_point lockedUntil{};
     };
-    // 最近处理过的客户端消息编号 → 当时的回执。客户端没收到回执而重发同一条消息时，直接返回原回执，不会重复保存
+    // 最近处理过的客户端消息编号 → 当时分配的序号和时间。客户端没收到回执而重发同一条消息时，直接返回原回执，不会重复保存
+    struct SavedAck {
+        int seq = 0;
+        std::string time;
+    };
     struct RecentMessages {
-        std::unordered_map<std::string, nlohmann::json> acks;
+        std::unordered_map<std::string, SavedAck> acks;
         std::deque<std::string> order;   // 先进先出，超过上限时淘汰最早的
+        std::chrono::steady_clock::time_point lastUsed{};   // 最后一次发消息或下线的时间：离线超过 recentTtl 后整个释放
     };
     static constexpr std::size_t kRecentLimit = 256;
     static constexpr int kSyncDefaultLimit = 200;   // 一次同步最多返回的消息条数（客户端可以要求更少）
