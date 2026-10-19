@@ -171,7 +171,7 @@ TEST_F(ChatServerTest, IdleConnectionsAreClosedButHeartbeatsKeepThemAlive) {
 
 TEST_F(ChatServerTest, ConnectionsThatNeverLogInAreClosed) {
     ChatServer::Options options;
-    options.loginTimeout = 200ms;
+    options.loginTimeout = 800ms;   // 留足余量：登录了的那条连接必须在这之前完成登录，机器慢时也不能被误断
     options.idleCheckInterval = 50ms;
     startServer(options);
     TestClient anonymous(port_);
@@ -916,10 +916,21 @@ TEST_F(ChatServerTest, TokenBucketRejectsFloodingButAllowsBursts) {
     TestClient zhang(port_), li(port_);
     ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
     ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
+    // 6 条一次写出：服务端在同一轮里处理完，用时远小于补充一个令牌的 200 毫秒。
+    // 不能一条一条地等回执——机器慢的时候（如 CI 上开了 AddressSanitizer）6 个来回会超过 200 毫秒，桶里又补进一个令牌
+    std::string flood;
+    for (int i = 0; i < 6; ++i) {
+        Packet packet;
+        packet.type = MessageType::SEND_MSG_REQ;
+        packet.body = sendRequest("flood-" + std::to_string(i), "10002", "刷屏 " + std::to_string(i));
+        flood += packet.encode();
+    }
+    zhang.sendRaw(flood);
     int ok = 0, limited = 0;
     for (int i = 0; i < 6; ++i) {
-        zhang.send(MessageType::SEND_MSG_REQ, sendRequest("flood-" + std::to_string(i), "10002", "刷屏 " + std::to_string(i)));
-        const json ack = zhang.receive()->body;
+        std::optional<Packet> response = zhang.receive();
+        ASSERT_TRUE(response);
+        const json ack = response->body;
         if (ack["ok"] == true) ++ok;
         else {
             ++limited;
@@ -979,7 +990,7 @@ TEST_F(ChatServerTest, SocialChangesAreSavedBeforeTheReplyAndBatchedPerRound) {
 
 TEST_F(ChatServerTest, DedupTableSurvivesReconnectAndIsReleasedAfterLongOffline) {
     ChatServer::Options options;
-    options.recentTtl = 300ms;
+    options.recentTtl = 1000ms;   // 留足余量：断线后要在这之前重连、重发，机器慢时也来得及
     options.idleCheckInterval = 50ms;
     startServer(options);
     auto ackOf = [](TestClient& client) {
@@ -1004,7 +1015,7 @@ TEST_F(ChatServerTest, DedupTableSurvivesReconnectAndIsReleasedAfterLongOffline)
         pushes.clear();
         EXPECT_EQ(call(zhang, "server.stats")["data"]["dedupAccounts"], 1);
     }
-    std::this_thread::sleep_for(700ms);   // 离线超过 recentTtl：去重表释放
+    std::this_thread::sleep_for(2000ms);   // 离线超过 recentTtl：去重表释放
     TestClient li(port_);
     ASSERT_EQ(li.login("QQ", "10002")["ok"], true);
     pushes.clear();
