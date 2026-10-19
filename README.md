@@ -1,5 +1,8 @@
 # IMChat
 
+[![CI](https://github.com/Hakak1-yrs/IMChat/actions/workflows/ci.yml/badge.svg)](https://github.com/Hakak1-yrs/IMChat/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 一个用 C++17 从零实现的即时通信系统：QQ / 微信 / 微博 / 微商四种服务共用一套账号体系，支持好友、群聊、朋友圈、消息撤回、@提醒等功能。
 
 - **服务端** `IMChatServer`：基于自己实现的 Reactor 网络库（非阻塞 I/O + 事件循环），使用自定义的二进制协议。功能包括：私信和群消息的确认与在线推送、离线消息同步、已读回执、单点登录、心跳超时、消息去重。
