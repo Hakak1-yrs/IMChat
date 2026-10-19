@@ -923,3 +923,26 @@ TEST_F(ChatServerTest, TokenBucketRejectsFloodingButAllowsBursts) {
     EXPECT_EQ(stats["logins"], 2);
     EXPECT_GE(stats["pushes"], 4);
 }
+
+TEST_F(ChatServerTest, RepeatedWrongPasswordsLockTheAccountForAWhile) {
+    ChatServer::Options options;
+    options.maxLoginFailures = 5;
+    options.loginLockout = std::chrono::milliseconds(400);
+    startServer(options);
+    TestClient client(port_);
+    for (int i = 0; i < 5; ++i) EXPECT_EQ(client.login("QQ", "10001", "wrong")["error"], "账号或密码错误");
+    // 锁定期间：连正确的密码也拒绝（不再校验密码，猜对了也看不出来）
+    const json locked = client.login("QQ", "10001", "123456");
+    EXPECT_EQ(locked["ok"], false);
+    EXPECT_GE(locked["retryAfter"], 1);
+    // 不存在的账号同样计数、同样锁定，提示与存在的账号相同
+    for (int i = 0; i < 5; ++i) client.login("QQ", "99999", "wrong");
+    EXPECT_EQ(client.login("QQ", "99999", "wrong")["retryAfter"], locked["retryAfter"]);
+    // 别的账号不受影响（同一 IP 的门槛是 4 倍，这里才失败 10 次）
+    TestClient other(port_);
+    EXPECT_EQ(other.login("QQ", "10002")["ok"], true);
+    std::this_thread::sleep_for(500ms);   // 锁定过期
+    EXPECT_EQ(client.login("QQ", "10001", "123456")["ok"], true);
+    pushes.clear();
+    EXPECT_EQ(call(other, "server.stats")["data"]["loginLockouts"], 2);
+}

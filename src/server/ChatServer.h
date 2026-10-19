@@ -39,6 +39,10 @@ public:
         // 每条连接发消息的速率上限（令牌桶）：每秒 messageRate 条，允许短时间突发 messageBurst 条；0 表示不限制
         double messageRate = 0;
         int messageBurst = 0;
+        // 防暴力猜密码：同一账号在 loginWindow 内失败 maxLoginFailures 次（同一 IP 是 4 倍），锁定 loginLockout；0 表示不限制
+        int maxLoginFailures = 5;
+        std::chrono::milliseconds loginWindow{ 5 * 60 * 1000 };
+        std::chrono::milliseconds loginLockout{ 60 * 1000 };
     };
 
     ChatServer(EventLoop& loop, Platform& platform, Options options);
@@ -66,6 +70,12 @@ private:
         long long pushes = 0;        // 推送出去的消息
         long long calls = 0;         // 通用请求
         long long rateLimited = 0;   // 因发送过快被拒绝的消息
+        long long loginLockouts = 0; // 因登录失败太多次而锁定的次数
+    };
+    struct LoginThrottle {   // 某个账号或 IP 的登录失败记录
+        int failures = 0;
+        std::chrono::steady_clock::time_point windowStart{};
+        std::chrono::steady_clock::time_point lockedUntil{};
     };
     // 最近处理过的客户端消息编号 → 当时的回执。客户端没收到回执而重发同一条消息时，直接返回原回执，不会重复保存
     struct RecentMessages {
@@ -123,6 +133,9 @@ private:
     nlohmann::json messageJson(const Message& message) const;   // 推送和同步共用的消息格式
     std::optional<Message> latestFrom(const ServiceBase& me) const;   // me 刚保存的那条消息
     bool takeToken(Session& session);   // 速率限制：还能发就扣一个令牌并返回 true
+    static std::string ipOf(const std::string& peer);   // "ip:port" → "ip"
+    long long lockedFor(std::initializer_list<std::string> keys) const;   // 还要锁定几秒（0 表示没锁）
+    void recordLoginFailure(const std::string& key, int limit);
     nlohmann::json statsJson() const;
     void logStats();
     void notifyPresence(const std::string& accountKey, bool online);   // 通知在线的好友：我上线 / 下线了
@@ -165,6 +178,7 @@ private:
     std::unordered_map<std::string, RecentMessages> recent_;           // "QQ 10001" → 最近的消息回执
     std::unordered_map<std::string, ApiHandler> api_;                  // op → 处理函数
     std::vector<Outgoing> outbox_;   // 本轮要交给 I/O 线程的发送和操作
+    std::unordered_map<std::string, LoginThrottle> throttles_;   // "A 服务 账号" / "I ip" → 登录失败记录
     bool batchedStore_ = false;   // 消息存储批量提交（SQLite）
     bool useOutbox_ = false;      // 发送先进发件箱：多线程时按线程分批；批量提交时保证先提交再发回执
 };

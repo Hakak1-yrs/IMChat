@@ -227,6 +227,17 @@ void ChatServer::handleLogin(Session& session, const json& request) {
         return;
     }
     const std::string id = field(request, "account");
+    const std::string key = ServiceTypeHelper::code(type) + " " + id;
+    // 防暴力猜密码：同一账号、同一 IP 短时间内失败太多次就暂时锁定。锁定期间直接拒绝，不再校验密码，
+    // 否则攻击者仍能从“锁定时也能区分对错”中得到信息；账号不存在也照样计数，不暴露哪些账号存在
+    const std::string ip = ipOf(session.connection->peer());
+    const long long retryAfter = lockedFor({ "A " + key, "I " + ip });
+    if (retryAfter > 0) {
+        response["error"] = "登录失败次数过多，请 " + std::to_string(retryAfter) + " 秒后再试";
+        response["retryAfter"] = retryAfter;
+        send(session.connection, MessageType::LOGIN_RESP, response);
+        return;
+    }
     ServiceBase* account = platform_.findAccount(type, id);
     User* owner = platform_.ownerOf(account);
     const std::string token = field(request, "token");
@@ -234,17 +245,21 @@ void ChatServer::handleLogin(Session& session, const json& request) {
         // 凭令牌登录：令牌签名正确、没有过期，并且这个账号属于令牌对应的用户
         int userId = 0;
         if (!owner || !tokens_.verify(token, userId) || owner->id() != userId) {
+            recordLoginFailure("A " + key, options_.maxLoginFailures);
+            recordLoginFailure("I " + ip, options_.maxLoginFailures * 4);
             response["error"] = "登录已失效，请重新输入密码登录";
             send(session.connection, MessageType::LOGIN_RESP, response);
             return;
         }
     } else if (!account || !owner || !account->checkPassword(field(request, "password"))) {
+        recordLoginFailure("A " + key, options_.maxLoginFailures);
+        recordLoginFailure("I " + ip, options_.maxLoginFailures * 4);   // 同一 IP 换着账号试：门槛高一些（可能是多人共用出口）
         // 不区分“账号不存在”和“密码错误”，避免被用来探测哪些账号存在
         response["error"] = "账号或密码错误";
         send(session.connection, MessageType::LOGIN_RESP, response);
         return;
     }
-    const std::string key = ServiceTypeHelper::code(type) + " " + id;
+    throttles_.erase("A " + key);   // 登录成功：账号的失败计数清零（IP 的不清，避免猜中一个账号就洗白）
     auto previous = online_.find(key);
     const std::uint64_t previousId = previous != online_.end() ? previous->second : 0;
     session.loggedIn = true;
@@ -364,6 +379,39 @@ void ChatServer::handleSendMessage(Session& session, const json& request) {
     }
 }
 
+std::string ChatServer::ipOf(const std::string& peer) {
+    const std::size_t colon = peer.rfind(':');
+    return colon == std::string::npos ? peer : peer.substr(0, colon);
+}
+
+long long ChatServer::lockedFor(std::initializer_list<std::string> keys) const {
+    const auto now = std::chrono::steady_clock::now();
+    long long longest = 0;
+    for (const std::string& key : keys) {
+        auto it = throttles_.find(key);
+        if (it == throttles_.end() || it->second.lockedUntil <= now) continue;
+        const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(it->second.lockedUntil - now).count();
+        longest = (std::max)(longest, (ms + 999) / 1000);   // 向上取整到秒
+    }
+    return longest;
+}
+
+void ChatServer::recordLoginFailure(const std::string& key, int limit) {
+    if (limit <= 0) return;   // 0 表示不限制
+    const auto now = std::chrono::steady_clock::now();
+    LoginThrottle& t = throttles_[key];
+    if (now - t.windowStart > options_.loginWindow) {   // 统计窗口过去了：重新计数
+        t.windowStart = now;
+        t.failures = 0;
+    }
+    if (++t.failures < limit) return;
+    t.lockedUntil = now + options_.loginLockout;
+    t.failures = 0;
+    t.windowStart = now;
+    ++stats_.loginLockouts;
+    Log::warn("登录失败次数过多，锁定 " + key);
+}
+
 bool ChatServer::takeToken(Session& session) {
     // 令牌桶：桶里最多 messageBurst 个令牌，每秒补充 messageRate 个，每发一条消息用掉一个。
     // 允许短时间的突发（比如断线重连后补发积压的消息），但长期速率不能超过 messageRate
@@ -389,7 +437,8 @@ json ChatServer::statsJson() const {
                  { "messages", stats_.messages },
                  { "pushes", stats_.pushes },
                  { "calls", stats_.calls },
-                 { "rateLimited", stats_.rateLimited } };
+                 { "rateLimited", stats_.rateLimited },
+                 { "loginLockouts", stats_.loginLockouts } };
 }
 
 void ChatServer::logStats() {
@@ -991,6 +1040,11 @@ void ChatServer::sendError(const TcpConnection::Ptr& connection, const json& req
 
 void ChatServer::closeIdleConnections() {
     const auto now = std::chrono::steady_clock::now();
+    // 顺便清理过期的登录失败记录：不再锁定、统计窗口也已过去的，留着只占内存
+    for (auto it = throttles_.begin(); it != throttles_.end();) {
+        const bool stale = it->second.lockedUntil <= now && now - it->second.windowStart > options_.loginWindow;
+        it = stale ? throttles_.erase(it) : std::next(it);
+    }
     std::vector<TcpConnection::Ptr> idle;   // 先收集再关闭：关闭会从 sessions_ 中删除，不能边遍历边删
     for (const auto& entry : sessions_) {
         if (now - entry.second.connection->lastReceive() > options_.idleTimeout) idle.push_back(entry.second.connection);
