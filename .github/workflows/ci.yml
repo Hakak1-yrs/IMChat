@@ -36,6 +36,28 @@ jobs:
           Stop-Process -Id $server.Id
           if ($privateExit -ne 0 -or $groupExit -ne 0) { exit 1 }
 
+  windows-asan:
+    runs-on: windows-latest
+    continue-on-error: true   # 新加入的任务，先不阻塞合并
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (MSVC AddressSanitizer)
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DIMCHAT_SANITIZE=address
+
+      - name: Build
+        run: cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Put the ASan runtime on PATH
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dll = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter clang_rt.asan_dynamic-x86_64.dll | Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          $dll.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Test
+        run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
+
   linux:
     name: linux (${{ matrix.name }})
     runs-on: ubuntu-latest
