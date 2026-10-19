@@ -339,13 +339,15 @@ int storeBench(std::string dataDir, const std::string& kind, int count) {
     const int afterSeq = last.seq() - 20;
     const std::size_t total = store->messagesFor(ServiceType::QQ, "10002", { 1001 }).size();
     std::printf("  （同步：这个人共有 %zu 条消息，只差最后 20 条）\n", total);
+    std::size_t found = 0, foundAfter = 0;   // 两种做法找到的条数（应当相同）
     timeIt("同步：全部读出再跳过", [&](int) {
-        std::size_t n = 0;
-        for (const Message& m : store->messagesFor(ServiceType::QQ, "10002", { 1001 })) n += m.seq() > afterSeq;
+        found = 0;
+        for (const Message& m : store->messagesFor(ServiceType::QQ, "10002", { 1001 })) found += m.seq() > afterSeq;
     }, 100);
     timeIt("同步：只读之后的（messagesAfter）", [&](int) {
-        store->messagesAfter(ServiceType::QQ, "10002", { 1001 }, afterSeq, 201);
+        foundAfter = store->messagesAfter(ServiceType::QQ, "10002", { 1001 }, afterSeq, 201).size();
     }, 100);
+    if (found != foundAfter) std::printf("  ！两种做法的结果不同：%zu 条 / %zu 条\n", found, foundAfter);
     timeIt("同步：第一次（从头取 200 条）", [&](int) {
         store->messagesAfter(ServiceType::QQ, "10002", { 1001 }, 0, 201);
     }, 100);
