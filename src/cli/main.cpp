@@ -212,7 +212,8 @@ int main(int argc, char** argv) {
                       std::to_string(s.value("ioThreads", 0)) + " 个，连接 " + std::to_string(s.value("connections", 0)) + "，在线 " +
                       std::to_string(s.value("online", 0)) + "；累计登录 " + std::to_string(s.value("logins", 0LL)) + " 次，消息 " +
                       std::to_string(s.value("messages", 0LL)) + " 条，推送 " + std::to_string(s.value("pushes", 0LL)) + " 条，因发送过快被拒 " +
-                      std::to_string(s.value("rateLimited", 0LL)) + " 条");
+                      std::to_string(s.value("rateLimited", 0LL)) + " 条，登录锁定 " + std::to_string(s.value("loginLockouts", 0LL)) +
+                      " 次，保存数据文件 " + std::to_string(s.value("dataSaves", 0LL)) + " 次");
             });
         } else if (command[0] == '/') {
             print("* 未知命令，输入 /help 查看命令");
