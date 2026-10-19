@@ -448,12 +448,20 @@ std::vector<Message> SqliteMessageStore::messagesFor(ServiceType service, const 
 std::vector<Message> SqliteMessageStore::messagesAfter(ServiceType service, const std::string& me, const std::vector<int>& groupNos,
                                                        int afterSeq, std::size_t limit) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    // 每个分支都带上 service 和 seq 条件，SQLite 才能对每个分支分别走索引（OR 优化），
-    // 只读 afterSeq 之后的部分，而不是先把这个人的全部消息读出来
-    std::string sql = std::string(kMessageColumns) +
-        "WHERE (service = ?1 AND sender = ?2 AND is_group = 0 AND seq > ?3)"
-        " OR (service = ?1 AND is_group = 0 AND target = ?2 AND seq > ?3)";
-    if (!groupNos.empty()) sql += " OR (service = ?1 AND is_group = 1 AND target IN (" + groupList(groupNos) + ") AND seq > ?3)";
+    // 拆成几段：我发的私信、发给我的私信、每个群的消息。每一段都能沿索引按序号顺序读，读够 limit 条就停，
+    // 最后把几段按序号归并再取前 limit 条。
+    // 写成一个 WHERE … OR … 的话，SQLite 要把各段符合条件的行全部取出来再排序：
+    // 一个有 10 万条消息的人第一次同步（afterSeq = 0）只要 200 条，也要排 10 万条
+    auto part = [](const std::string& where) {
+        return "SELECT * FROM (" + std::string(kMessageColumns) + "WHERE service = ?1 AND " + where + " AND seq > ?3 ORDER BY seq LIMIT ?4)";
+    };
+    std::string sql = part("sender = ?2 AND is_group = 0") + " UNION ALL " + part("target = ?2 AND is_group = 0 AND sender <> ?2");
+    const std::set<int> groups(groupNos.begin(), groupNos.end());
+    if (groups.size() <= 400) {   // 一条复合查询最多 500 段
+        for (int no : groups) sql += " UNION ALL " + part("is_group = 1 AND target = '" + std::to_string(no) + "'");
+    } else {
+        sql += " UNION ALL " + part("is_group = 1 AND target IN (" + groupList(groupNos) + ")");
+    }
     sql += " ORDER BY seq LIMIT ?4";
     // 群号组合因人而异，这条语句不进缓存，用完即释放
     sqlite3_stmt* raw = nullptr;

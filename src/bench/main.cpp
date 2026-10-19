@@ -319,6 +319,8 @@ int storeBench(std::string dataDir, const std::string& kind, int count) {
         store->lastFrom(ServiceType::QQ, "10001", last);
     });
     // 客户端重连后的增量同步：只差最后 20 条。旧做法读出全部历史再跳过，新做法只读需要的部分
+    for (int i = 0; i < count / 2; ++i) store->postGroup(ServiceType::QQ, 1001, "10003", "群消息 " + std::to_string(i));
+    store->postPrivate(ServiceType::QQ, "10001", "10002", "最后一条");
     store->lastFrom(ServiceType::QQ, "10001", last);
     const int afterSeq = last.seq() - 20;
     const std::size_t total = store->messagesFor(ServiceType::QQ, "10002", { 1001 }).size();
@@ -329,6 +331,9 @@ int storeBench(std::string dataDir, const std::string& kind, int count) {
     }, 100);
     timeIt("同步：只读之后的（messagesAfter）", [&](int) {
         store->messagesAfter(ServiceType::QQ, "10002", { 1001 }, afterSeq, 201);
+    }, 100);
+    timeIt("同步：第一次（从头取 200 条）", [&](int) {
+        store->messagesAfter(ServiceType::QQ, "10002", { 1001 }, 0, 201);
     }, 100);
     return 0;
 }
