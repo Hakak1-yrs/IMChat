@@ -9,6 +9,7 @@
 //   IMChatBench save <数据目录> [次数]             加好友后保存数据文件的耗时
 //   IMChatBench social <目录> text|sqlite [记录数]  社交记录很多时发一条私信的耗时
 //   IMChatBench moments <目录> text|sqlite [动态数] 动态很多时看朋友圈、点赞的耗时
+//   IMChatBench friends <目录> [人数]               两两互为好友时联系人列表的耗时
 // 客户端用的是项目自己的网络库（EventLoop + TcpClient）：threads 个事件循环线程，每个线程负责一部分连接
 #include "EventLoop.h"   // 网络头文件（winsock2.h）必须在其他 Windows 头文件之前
 #include <algorithm>
@@ -427,6 +428,39 @@ int socialBench(std::string dataDir, const std::string& kind, int records) {
     return 0;
 }
 
+// ======================== friends：好友很多时的联系人列表 ========================
+
+// 联系人列表（contacts.list）要给每个好友算共同好友；这里让 users 个人两两互为好友，测一次要多久
+int friendsBench(std::string dataDir, int users) {
+    if (dataDir.back() != '/' && dataDir.back() != '\\') dataDir += '/';
+    std::error_code ec;
+    std::filesystem::remove_all(Util::pathOf(dataDir), ec);
+    Platform platform(dataDir);
+    std::vector<ServiceBase*> accounts;
+    std::string msg;
+    for (int i = 0; i < users; ++i) {
+        ServiceBase* account = platform.registerUser("用户" + std::to_string(i), ServiceType::QQ, "u" + std::to_string(i),
+                                                     Date(2000, 1, 1), "上海", "123456", msg);
+        if (!account) {
+            std::cerr << "注册失败：" << msg << "\n";
+            return 1;
+        }
+        accounts.push_back(account);
+    }
+    const auto addStart = Clock::now();
+    for (int i = 0; i < users; ++i)
+        for (int j = i + 1; j < users; ++j) platform.addFriend(*accounts[i], accounts[j]->id(), "", msg);
+    const double addMs = std::chrono::duration<double, std::milli>(Clock::now() - addStart).count();
+    const auto start = Clock::now();
+    std::size_t pairs = 0;
+    for (const Friend& f : accounts[0]->friends().all())
+        pairs += platform.mutualFriends(*accounts[0], *platform.findAccount(ServiceType::QQ, f.id())).size();
+    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+    std::printf("%d 人两两互为好友：建立好友关系 %.0f 毫秒；一个人的联系人列表（每个好友的共同好友，共 %zu 项）%.2f 毫秒\n", users, addMs,
+                pairs, ms);
+    return 0;
+}
+
 // ======================== moments：动态很多时看朋友圈、点赞 ========================
 
 int momentsBench(std::string dataDir, const std::string& kind, int posts) {
@@ -473,6 +507,7 @@ void usage() {
                  "  IMChatBench save <数据目录> [次数=100]   加好友后保存数据文件的耗时（数据目录用 prepare 准备）\n"
                  "  IMChatBench social <目录> text|sqlite [记录数=10000]   社交记录很多时发一条私信的耗时（目录会被清空）\n"
                  "  IMChatBench moments <目录> text|sqlite [动态数=10000]  动态很多时看朋友圈、点赞的耗时（目录会被清空）\n"
+                 "  IMChatBench friends <目录> [人数=300]   两两互为好友时联系人列表的耗时（目录会被清空）\n"
                  "  IMChatBench run --data <数据目录> [--host 127.0.0.1] [--port 9000] [--clients 200] [--messages 100]\n"
                  "                  [--threads 4] [--window 1] [--group | --remark]\n";
 }
@@ -500,6 +535,7 @@ int main(int argc, char** argv) {
     }
     try {
         if (args[0] == "prepare" && args.size() >= 2) return prepare(args[1], args.size() >= 3 ? std::stoi(args[2]) : 200);
+        if (args[0] == "friends" && args.size() >= 2) return friendsBench(args[1], args.size() >= 3 ? std::stoi(args[2]) : 300);
         if (args[0] == "moments" && args.size() >= 3) return momentsBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
         if (args[0] == "social" && args.size() >= 3) return socialBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
         if (args[0] == "save" && args.size() >= 2) return saveBench(args[1], args.size() >= 3 ? std::stoi(args[2]) : 100);
