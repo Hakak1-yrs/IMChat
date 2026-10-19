@@ -17,7 +17,8 @@ EventLoop::~EventLoop() {
 
 void EventLoop::loop() {
     threadId_ = std::this_thread::get_id();
-    quit_ = false;
+    // 不在这里清除退出标志：别的线程可能在 loop() 开始之前就调用了 quit()（比如刚创建就要销毁），
+    // 那样的话应当立即返回，而不是把这次 quit() 抹掉、永远等下去。标志在退出时清除，之后可以再次调用 loop()
     std::vector<Poller::Event> active;
     while (!quit_) {
         active.clear();
@@ -32,6 +33,7 @@ void EventLoop::loop() {
         runDueTimers();
         runPendingTasks();
     }
+    quit_ = false;
 }
 
 void EventLoop::quit() {

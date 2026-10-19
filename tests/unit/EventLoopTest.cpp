@@ -56,3 +56,15 @@ TEST(EventLoopTest, TaskQueuedFromLoopThreadRunsAfterCurrentTask) {
     loop.loop();
     EXPECT_EQ(order, (std::vector<int>{ 1, 2 }));
 }
+
+TEST(EventLoopTest, QuitBeforeLoopStartsIsNotLost) {
+    // 刚创建就要销毁：quit() 在 loop() 开始之前到达，loop() 应当立即返回，而不是把它抹掉、永远等下去
+    EventLoop loop;
+    loop.quit();
+    auto finished = std::async(std::launch::async, [&] { loop.loop(); });
+    ASSERT_EQ(finished.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    // 退出后可以再次运行
+    loop.runAfter(std::chrono::milliseconds(10), [&] { loop.quit(); });
+    auto again = std::async(std::launch::async, [&] { loop.loop(); });
+    EXPECT_EQ(again.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+}
