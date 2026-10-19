@@ -417,7 +417,13 @@ int socialBench(std::string dataDir, const std::string& kind, int records) {
     const auto start = Clock::now();
     for (int i = 0; i < times; ++i) platform.sendPrivate(*a, b->id(), "压测 " + std::to_string(i), msg);
     const double us = std::chrono::duration<double, std::micro>(Clock::now() - start).count() / times;
-    std::printf("%s，%d 条社交记录：发一条私信 %.1f 微秒\n", kind == "sqlite" ? "SQLite" : "文本日志", records, us);
+    // 打开"新朋友"页面（social.get）：列出和我有关的好友申请（先调一次，把刚写入的记录应用到索引里）
+    platform.friendRequests(*a);
+    const auto listStart = Clock::now();
+    for (int i = 0; i < 20; ++i) platform.friendRequests(*a);
+    const double listUs = std::chrono::duration<double, std::micro>(Clock::now() - listStart).count() / 20;
+    std::printf("%s，%d 条社交记录：发一条私信 %.1f 微秒，列出我的好友申请 %.1f 微秒\n", kind == "sqlite" ? "SQLite" : "文本日志",
+                records, us, listUs);
     return 0;
 }
 

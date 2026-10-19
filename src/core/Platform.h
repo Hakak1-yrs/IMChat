@@ -8,6 +8,7 @@
 #include <vector>
 #include "DataFile.h"
 #include "FriendRequest.h"
+#include "FriendRequestBook.h"
 #include "GroupListener.h"
 #include "GroupManager.h"
 #include "MessageStore.h"
@@ -178,6 +179,7 @@ private:
     GroupManager groups_;
     std::unique_ptr<MessageStore> messages_;
     MomentFeed feed_;                  // 朋友圈的内存索引（由 messages_ 里的记录增量构建）
+    FriendRequestBook requestBook_;    // 好友申请的内存索引（同上）
     std::set<std::string> blocked_;    // "服务 拉黑者 对方"
     std::set<std::string> noVerify_;   // "服务 账号"：加好友不需要验证（默认需要）
     int syncedLine_ = 0;               // 消息文件中已经应用到内存的记录位置

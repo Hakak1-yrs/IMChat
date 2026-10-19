@@ -74,7 +74,7 @@ std::unique_ptr<MessageStore> createStore(const std::string& dataDir, Platform::
 }  // namespace
 
 Platform::Platform(const std::string& dataDir, Storage storage)
-    : dataDir_(dataDir), sessionStamp_(Date::nowStamp()), messages_(createStore(dataDir, storage)), feed_(*messages_),
+    : dataDir_(dataDir), sessionStamp_(Date::nowStamp()), messages_(createStore(dataDir, storage)), feed_(*messages_), requestBook_(*messages_),
       usersFile_(dataDir, "users.txt"), accountsFile_(dataDir, "accounts.txt"), friendsFile_(dataDir, "friends.txt"),
       groupsFile_(dataDir, "groups.txt"), subGroupsFile_(dataDir, "subgroups.txt") {
     // 文件缺失时以空数据启动，退出时会自动创建数据文件
@@ -98,6 +98,8 @@ Platform::Platform(const std::string& dataDir, Storage storage)
     repaired += repairData();
     groups_.setListener(this);   // 之后群里发生的事写成系统提示（加载数据本身不产生提示）
     syncSocial();                // 应用消息文件中的好友申请结果、单向删除、拉黑、验证设置
+    requestBook_.refresh();      // 好友申请、朋友圈的内存索引：启动时建好，第一次查询不必等
+    feed_.refresh();
 
     // 题目约定每个微X服务都有 1001～1006 号群：有账号但还没有群的服务（如新增的微商）补建预置群
     for (ServiceType type : ServiceTypeHelper::all()) {
@@ -767,23 +769,6 @@ void Platform::syncSocial() {
     const int end = messages_->lastRecordLine();
     if (end <= syncedLine_) return;
     const std::vector<Record> records = messages_->recordsAfter("FVDBS", syncedLine_);
-    std::map<int, const Record*> requests;   // 申请序号 → 申请
-    for (const Record& r : records) {
-        if (r.kind == 'F') requests[r.seq] = &r;
-    }
-    // 同意的是较早的申请（不在这一批里）时，才把全部申请读出来找
-    std::vector<Record> older;
-    bool olderLoaded = false;
-    auto findRequest = [&](int seq) -> const Record* {
-        auto it = requests.find(seq);
-        if (it == requests.end() && !olderLoaded) {
-            older = messages_->records("F");
-            olderLoaded = true;
-            for (const Record& r : older) requests.emplace(r.seq, &r);
-            it = requests.find(seq);
-        }
-        return it == requests.end() ? nullptr : it->second;
-    };
     int last = end;
     for (const Record& r : records) {
         last = (std::max)(last, r.line);   // 读完位置之后、读记录之前别的窗口又写了几条：也已经应用了
@@ -791,8 +776,9 @@ void Platform::syncSocial() {
         switch (r.kind) {
         case 'V': {   // 申请序号 A/X 处理人 备注
             if (r.field(1) != "A") break;
-            if (const Record* request = findRequest(toInt(r.field(0))))
-                applyFriendship(r.service, request->field(1), request->field(0), request->field(2), r.field(3));
+            requestBook_.refresh();   // 要找到当初那条申请（F）
+            if (const FriendRequest* request = requestBook_.find(toInt(r.field(0))))
+                applyFriendship(r.service, request->from, request->to, request->remark, r.field(3));
             break;
         }
         case 'D':   // 删除者 被删除者
@@ -832,19 +818,17 @@ bool Platform::requestFriend(ServiceBase& me, const std::string& targetId, const
     const std::string myRemark = Util::toField(Util::lineText(remark));
     const bool stillFriend = other->friends().contains(me.id());   // 我曾单向删除对方，对方仍保留着我
     const bool direct = (stillFriend || !requiresVerification(*other)) && !isBlocked(me.type(), targetId, me.id());
-    messages_->appendRecord('F', me.type(), { targetId, me.id(), myRemark.empty() ? "-" : myRemark }, true, hello);
+    if (!messages_->appendRecord('F', me.type(), { targetId, me.id(), myRemark.empty() ? "-" : myRemark }, true, hello)) {
+        msg = "好友申请发送失败，请检查 data 目录。";
+        return false;
+    }
+    const int requestSeq = messages_->lastSeq();   // 申请占一个序号：就是刚分配的这个
     if (!direct) {   // 被对方拉黑时，申请照常“发出”，但对方看不到（与微信相同）
         msg = "好友申请已发送，等待 " + other->displayName() + " 验证。";
         return true;
     }
     // 不需要验证：自动通过（写一条处理人为 - 的“同意”记录，其他窗口据此同步）
-    std::vector<Record> sent = messages_->records("F");
-    for (auto it = sent.rbegin(); it != sent.rend(); ++it) {
-        if (it->service == me.type() && it->field(0) == targetId && it->field(1) == me.id()) {
-            messages_->appendRecord('V', me.type(), { std::to_string(it->seq), "A", "-", "-" }, false);
-            break;
-        }
-    }
+    messages_->appendRecord('V', me.type(), { std::to_string(requestSeq), "A", "-", "-" }, false);
     applyFriendship(me.type(), me.id(), targetId, myRemark, "");
     msg = stillFriend ? other->displayName() + " 的好友列表中仍有你，已直接添加为好友。"
                       : other->displayName() + " 没有开启好友验证，已直接添加为好友。";
@@ -853,25 +837,11 @@ bool Platform::requestFriend(ServiceBase& me, const std::string& targetId, const
 
 std::vector<FriendRequest> Platform::friendRequests(const ServiceBase& me) {
     syncSocial();
-    std::vector<Record> records = messages_->records("FV");
-    std::map<int, FriendRequest::Status> status;
-    for (const Record& r : records) {
-        if (r.kind == 'V') status[toInt(r.field(0))] = r.field(1) == "A" ? FriendRequest::ACCEPTED : FriendRequest::REJECTED;
-    }
+    requestBook_.refresh();
     std::map<std::string, FriendRequest> incoming, outgoing;   // 同一个人发了几次，只保留最新的一条
-    for (const Record& r : records) {
-        if (r.kind != 'F' || r.service != me.type()) continue;
-        FriendRequest req;
-        req.seq = r.seq;
-        req.service = r.service;
-        req.to = r.field(0);
-        req.from = r.field(1);
-        req.remark = r.field(2) == "-" ? "" : r.field(2);
-        req.greeting = r.text;
-        req.time = r.time;
-        if (status.count(r.seq)) req.status = status[r.seq];
-        if (req.to == me.id() && !isBlocked(me.type(), me.id(), req.from)) incoming[req.from] = req;
-        if (req.from == me.id()) outgoing[req.to] = req;
+    for (const FriendRequest* req : requestBook_.of(me.type(), me.id())) {   // 按序号递增：后面的覆盖前面的
+        if (req->to == me.id() && !isBlocked(me.type(), me.id(), req->from)) incoming[req->from] = *req;
+        if (req->from == me.id()) outgoing[req->to] = *req;
     }
     std::vector<FriendRequest> result;
     for (auto& kv : incoming) result.push_back(kv.second);
