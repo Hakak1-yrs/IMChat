@@ -199,3 +199,7 @@ ctest --test-dir build -C Release
   - 消息存储的一致性测试：同一组用例分别跑在文本日志和 SQLite 上（序号共享且不复用、查询与排序、撤回与未读、注销与解散、重新打开后数据仍在），以及旧日志导入 SQLite。
   - SHA-256 / HMAC 的标准测试向量，Poller（Linux 上是 epoll）的基本行为。
   - 客户端端到端测试：服务端停机期间发出的消息，恢复后恰好送达一次；被挤下线的客户端不会自动重连；分批同步的途中断线，重连后从同步到的位置接着要（用按脚本应答的假服务端制造这个时序）。
+
+## 许可证
+
+[MIT](LICENSE)。第三方库：[nlohmann/json](third_party/nlohmann/LICENSE.MIT)（MIT），构建时下载的 SQLite（公有领域）和 GoogleTest（BSD-3-Clause，仅用于测试）。
