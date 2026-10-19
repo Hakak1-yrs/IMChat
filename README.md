@@ -3,33 +3,57 @@
 [![CI](https://github.com/Hakak1-yrs/IMChat/actions/workflows/ci.yml/badge.svg)](https://github.com/Hakak1-yrs/IMChat/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-一个用 C++17 从零实现的即时通信系统：QQ / 微信 / 微博 / 微商四种服务共用一套账号体系，支持好友、群聊、朋友圈、消息撤回、@提醒等功能。
+用 C++17 从零实现的即时通信系统：自己写的 Reactor 网络库（epoll / poll）、多线程服务端、SQLite 存储、断线不丢消息的客户端库，以及 Win32 + Direct2D 自绘的图形客户端。
 
-- **服务端** `IMChatServer`：基于自己实现的 Reactor 网络库（非阻塞 I/O + 事件循环），使用自定义的二进制协议。功能包括：私信和群消息的确认与在线推送、离线消息同步、已读回执、单点登录、心跳超时、消息去重。
-- **网络客户端库** `ChatClient`：自动重连（指数退避）、心跳检测、待确认队列与断线重发。服务端宕机期间发出的消息，恢复后会送达，并且只送达一次。命令行客户端 `IMChatCli` 基于这个库。
-- **图形客户端**：不依赖任何界面库，用 Win32 + Direct2D 自绘，有两种模式。
-  - **联网模式**：通过服务端工作。一处登录，本人的 QQ、微信、微博同时在线（服务端签发的登录令牌），导航栏切换服务，其他服务的未读实时显示。
-    - 聊天：私信、群聊、离线消息、已读/未读、好友在线状态、撤回、@提醒；断线时显示"发送中"，重连后自动补发。
-    - 好友：好友申请与验证（对方实时收到提醒）、同意时设置备注、修改备注、单向删除、黑名单、好友资料页。
-    - 群管理：建群/解散、申请与审批、邀请、踢人、管理员、禁言、公告、改名、转让、切换管理模式、讨论组。权限由服务端按群的管理策略检查，系统提示实时推送给在线成员。
-    - 朋友圈：发表（公开 / 私密 / 部分可见 / 不给谁看）、点赞、评论与回复；好友的动态和互动实时刷新。
-  - **单机模式**：直接读写本地数据。另有几项只操作本机的功能：注册与开通服务、跨服务好友推荐、点对点聊天、实时群聊室。
-- **控制台客户端**：单机模式。
-- **压测工具** `IMChatBench`：
-  - 测得私信 **5～6.6 万条/秒**（2 个 I/O 线程，p99 约 5 ms），100 人群消息 **2.7 万条/秒**（单线程，每秒推送约 260 万条）；5,000 条并发连接下私信 5.4 万条/秒，推送一条不少。不同时段的绝对数字会随机器状态波动，报告里只比较同一时段的数据。
-  - 压测先后发现几个瓶颈：每条消息都要完整解析两遍消息文件；群发时每条推送一次系统调用；多线程第一版每条推送都要跨线程唤醒一次；算 @ 时对每个群成员做线性的账号查找（靠分阶段计时找到）。
-  - 分别改为增量读取、合并写、业务线程发件箱分批交回、哈希索引。SQLite 存储的批量提交和检查点优化也在其中。
-  - 后来又处理了几个"数据越多越慢"的问题：
-    - 离线同步原来要读出全部历史：改为只读需要的那一段，SQLite 用按索引顺序读的 `UNION ALL`，重连同步从 107 ms 降到 0.06 ms；
-    - 每条私信前都要把全部社交记录读一遍：改为增量读取。积累 2 万条社交记录后，服务端私信吞吐从 178 条/秒恢复到 6.4 万条/秒（和没有记录时一样）；
-    - 朋友圈、好友申请每次查询都读全部记录：改为增量构建的内存索引，账号注销后自动重建；好友、群的查找从逐个比较改为哈希索引（联系人列表原来是好友数的三次方）；
-    - 好友、群的修改原来每次都要 fsync 整个数据文件：改为一轮只保存一次，从 129 次/秒提高到 1.5 万次/秒，仍然先保存再回复。
-  - 详见 [压测报告](docs/BENCHMARK.md)。
+## 亮点
 
-> 项目最初是面向对象程序设计的课程设计，之后持续扩展，正在从"多个客户端共享本地数据文件"改造为客户端/服务端架构。进度见 [路线图](docs/ROADMAP.md)。
+- **网络库从零实现**：one loop per thread 的 Reactor，Linux 上用 epoll、Windows 上用 WSAPoll，同一套 `Poller` 接口；跨线程投递按 I/O 线程分批，同一轮发给同一连接的数据合并成一次系统调用。
+- **性能有数据**：私信 **5～6.6 万条/秒**（p99 约 5 ms），100 人群消息 **2.7 万条/秒**，5,000 条并发连接下推送一条不少。每次优化都是先测量、找到热点、再修改、再测量，过程（包括测错的那次）写在 [压测报告](docs/BENCHMARK.md) 里。
+- **数据越多越慢的问题逐个解决**：积累 2 万条社交记录后，私信吞吐从 178 条/秒恢复到 6.4 万条/秒；重连同步从 107 ms 降到 0.06 ms；好友修改从 129 次/秒提高到 1.5 万次/秒，仍然先写入磁盘再回复。
+- **消息不丢不重**：客户端消息编号去重、断线自动重连并重发、按序号增量同步；服务端宕机期间发出的消息，恢复后恰好送达一次。
+- **测试与检查**：100 多个单元和集成测试、356 项业务测试、服务端模糊测试；CI 在 Windows 和 Linux 上运行，AddressSanitizer、UBSan、ThreadSanitizer 都必须通过（TSan 在 CI 上抓到过一个真实的线程竞争，已修复）。
+
+## 架构
+
+```
+ 图形客户端 / 命令行客户端 / 压测工具
+        │  ChatClient：自动重连、心跳、待确认队列、按序号增量同步
+        │  TCP，协议 [4 字节长度][2 字节类型][JSON]
+        ▼
+           主线程                 I/O 线程 × N（每个线程一个事件循环）            业务线程
+ 连接 ──▶ accept ──轮转分配──▶ Poller ─▶ TcpConnection ─▶ 切帧 + 解析 JSON ──批量──▶ ChatServer ─▶ Platform ─▶ MessageStore
+                            (epoll/poll)  输入/输出缓冲区    (半包/粘包)            会话、推送、去重  业务规则    文本日志 / SQLite
+                                    ◀──────────── 发件箱：本轮要发的数据按 I/O 线程分批交回 ────────────┘
+```
+
+## 快速开始
+
+Linux（服务端、命令行客户端、压测工具和全部测试；Windows 见[构建与运行](#构建与运行)）：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+ctest --test-dir build                                   # 运行全部测试
+cp -r data_demo data                                     # 演示数据（账号密码都是 123456）
+build/bin/IMChatServer --port 9000 --data data           # 启动服务端
+build/bin/IMChatCli --port 9000 QQ 10001 123456          # 另开两个终端，各登录一个账号互发消息
+build/bin/IMChatCli --port 9000 QQ 10002 123456          # 命令：/to 10001 你好
+```
 
 ![群聊与右键菜单](docs/images/chat.png)
 ![朋友圈](docs/images/moments.png)
+
+> 项目最初是面向对象程序设计的课程设计（单机版，多个窗口共享本地数据文件），之后扩展为客户端/服务端架构，并持续做性能和可靠性方面的改进。进度见 [路线图](docs/ROADMAP.md)。
+
+## 组成
+
+| 程序 | 说明 |
+|---|---|
+| `IMChatServer` | 服务端：私信和群消息的确认与在线推送、离线同步、已读回执、单点登录、心跳超时、消息去重、限流、登录锁定 |
+| `ChatClient`（库） | 网络客户端库：自动重连（指数退避）、心跳检测、待确认队列与断线重发、增量同步 |
+| `IMChatCli` | 命令行客户端，基于 `ChatClient` |
+| `IMChatClient` | 图形客户端（Windows）：Win32 + Direct2D 自绘，不依赖界面库。联网模式通过服务端工作（一处登录，本人的多个服务同时在线）；单机模式直接读写本地数据 |
+| `IMChatConsole` | 控制台客户端（Windows，单机模式） |
+| `IMChatBench` | 压测工具：吞吐、回执延迟（p50/p90/p99）、推送是否一条不少，以及各项存储和数据规模的微基准 |
 
 ## 功能
 
@@ -45,12 +69,7 @@
 
 ## 服务端
 
-```
-           主线程                 I/O 线程 × N（每个线程一个事件循环）            业务线程
- 客户端 ──▶ accept ──轮转分配──▶ Poller ─▶ TcpConnection ─▶ 切帧 + 解析 JSON ──批量──▶ ChatServer ─▶ Platform
-                                 (poll)    输入/输出缓冲区    (半包/粘包)               会话、推送、去重   业务规则、存储
-                                    ◀──────────── 发件箱：本轮要发的数据按 I/O 线程分批交回 ────────────┘
-```
+整体结构见上面的[架构图](#架构)。
 
 - **Reactor**：`EventLoop` 在一个线程里循环执行"等待 I/O 事件 → 分发给连接 → 执行定时器 → 执行其他线程投递的任务"。I/O 多路复用抽象成 `Poller` 接口，有两种实现：Linux 上默认用 `EpollPoller`（水平触发），其他平台用 `PollPoller`（Windows 上是 `WSAPoll`）。事件循环和连接的代码只认接口，换实现不用改。
 - **多线程（one loop per thread）**：
@@ -117,10 +136,10 @@ build\bin\Release\IMChatCli.exe --host 192.168.1.10 --port 9000 QQ 10002 123456
 
 ## 构建与运行
 
-**Windows**：需要 Windows 10/11 和 Visual Studio 2022（带"使用 C++ 的桌面开发"）。也可以用 MinGW 的 GCC 编译。
+**Windows**：需要 Windows 10/11 和 Visual Studio 2022 或更新版本（带"使用 C++ 的桌面开发"）。也可以用 MinGW 的 GCC 编译。
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -A x64
 cmake --build build --config Release
 ctest --test-dir build -C Release        # 运行测试
 
@@ -135,7 +154,8 @@ build\bin\Release\IMChatConsole.exe      # 控制台客户端
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build
-build/bin/IMChatServer --port 9000 --data data_demo   # Linux 上使用 epoll；IMCHAT_POLLER=poll 改用 poll
+cp -r data_demo data                                  # data_demo 是演示数据母版，复制一份再用
+build/bin/IMChatServer --port 9000 --data data        # Linux 上使用 epoll；IMCHAT_POLLER=poll 改用 poll
 ```
 
 可以用 `-DIMCHAT_SANITIZE=address,undefined` 或 `-DIMCHAT_SANITIZE=thread` 打开消毒器。
@@ -146,7 +166,7 @@ build/bin/IMChatServer --port 9000 --data data_demo   # Linux 上使用 epoll；
 - 密码学：Windows 用 CNG，其他平台用经过标准测试向量验证的 `Sha256`；
 - 网络库：`SocketOps` 和 `Poller`。
 
-Windows（MSVC、MinGW GCC）和 MSYS2 的 POSIX 环境下，全部测试都已通过。
+Windows（MSVC、MinGW GCC）、Linux（GCC，CI 上运行）和 MSYS2 的 POSIX 环境下，全部测试都已通过。
 
 在 Windows 上也可以直接用 VS 2022 "打开文件夹"。演示账号的密码都是 `123456`，例如 QQ `10001`、微信 `wx2001`。同时打开多个客户端并登录不同账号，就能互相聊天：
 
@@ -181,10 +201,11 @@ ctest --test-dir build -C Release
 
 每次推送都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）检查：
 - **Windows**：编译（警告视为错误）、运行全部测试、乱序重复运行单元测试，并跑一遍私信和群消息的压测，确认推送一条不少；
-- **Linux**：GCC 编译和全部测试（epoll），网络相关测试再用 poll 跑一遍，并做压测冒烟测试；另有 AddressSanitizer + UndefinedBehaviorSanitizer、ThreadSanitizer 两个任务。
+- **Linux**：GCC 编译和全部测试（epoll），网络相关测试再用 poll 跑一遍，服务端模糊测试多换 20 个随机种子，并做压测冒烟测试；另有 AddressSanitizer + UndefinedBehaviorSanitizer、ThreadSanitizer 两个任务。
+- Windows 上还有一个 AddressSanitizer 任务。所有任务都必须通过。
 
 - `tests/TestMain.cpp`（356 项检查）：直接调用业务接口，每个用例从同一份基线数据开始，在独立的临时目录中运行。覆盖账号绑定规则、两种群模式的权限、模式切换不损坏数据、保存与重新加载、加载时修复不一致的数据、两个窗口同时修改时的冲突处理、编码转换、含中文的数据路径、好友申请、撤回、朋友圈可见范围等。
-- `tests/unit/`（GoogleTest，104 个用例；服务端和客户端的集成测试还会在 3 个 I/O 线程下、以及用 SQLite 存储消息时各再跑一遍）：
+- `tests/unit/`（GoogleTest，109 个用例；服务端和客户端的集成测试还会在 3 个 I/O 线程下、以及用 SQLite 存储消息时各再跑一遍）：
   - 协议：半包、粘包、非法长度、JSON 往返。
   - 网络库：缓冲区、定时器、跨线程任务、4 MiB 数据的分段发送、50 个并发连接（单线程和 4 个 I/O 线程各跑一遍，并检查连接确实分到了各个线程）、客户端在服务端恢复后自动重连。
   - 服务端集成测试：用真实套接字验证以下内容：
