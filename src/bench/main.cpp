@@ -1,5 +1,5 @@
 // IMChat 压测工具。
-//   IMChatBench prepare <数据目录> [用户数=200]
+//   IMChatBench prepare <数据目录> [用户数=200] [社交记录数=0]
 //       用业务接口注册一批 QQ 账号：相邻两人互为好友（1-2、3-4……），前 100 人在同一个群里，账号列表写入 bench_accounts.txt
 //   IMChatBench run --data <数据目录> [--host 127.0.0.1] [--port 9000] [--clients 200] [--messages 100]
 //                   [--threads 4] [--window 1] [--group | --remark]
@@ -56,7 +56,7 @@ const int kGroupLimit = 100;   // 压测群的人数上限
 
 // ======================== prepare：准备压测数据 ========================
 
-int prepare(std::string dataDir, int users) {
+int prepare(std::string dataDir, int users, int socialRecords) {
     if (dataDir.back() != '/' && dataDir.back() != '\\') dataDir += '/';
     Platform platform(dataDir);
     std::vector<ServiceBase*> accounts;
@@ -73,6 +73,9 @@ int prepare(std::string dataDir, int users) {
     for (int i = 0; i + 1 < users; i += 2) platform.addFriend(*accounts[i], accounts[i + 1]->id(), "", msg);
     Group* group = platform.createGroup(*accounts[0], "压测群", msg);
     for (int i = 1; group && i < std::min(users, kGroupLimit); ++i) group->invite(accounts[0]->id(), accounts[i]->id(), msg);
+    // 模拟运行了一段时间的服务端：别人之间的好友申请记录（还没有处理）
+    for (int i = 0; i < socialRecords; ++i)
+        platform.messages().appendRecord('F', ServiceType::QQ, { std::to_string(900000 + i), std::to_string(800000 + i), "-" }, true, "你好");
     if (!platform.save()) {
         std::cerr << "保存失败\n";
         return 1;
@@ -545,7 +548,7 @@ int momentsBench(std::string dataDir, const std::string& kind, int posts) {
 
 void usage() {
     std::cout << "用法：\n"
-                 "  IMChatBench prepare <数据目录> [用户数=200]\n"
+                 "  IMChatBench prepare <数据目录> [用户数=200] [社交记录数=0]\n"
                  "  IMChatBench store <目录> text|sqlite [次数=10000]   存储层微基准\n"
                  "  IMChatBench save <数据目录> [次数=100]   加好友后保存数据文件的耗时（数据目录用 prepare 准备）\n"
                  "  IMChatBench social <目录> text|sqlite [记录数=10000]   社交记录很多时发一条私信的耗时（目录会被清空）\n"
@@ -578,7 +581,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     try {
-        if (args[0] == "prepare" && args.size() >= 2) return prepare(args[1], args.size() >= 3 ? std::stoi(args[2]) : 200);
+        if (args[0] == "prepare" && args.size() >= 2)
+            return prepare(args[1], args.size() >= 3 ? std::stoi(args[2]) : 200, args.size() >= 4 ? std::stoi(args[3]) : 0);
         if (args[0] == "groups" && args.size() >= 2) return groupsBench(args[1], args.size() >= 3 ? std::stoi(args[2]) : 1000);
         if (args[0] == "friends" && args.size() >= 2) return friendsBench(args[1], args.size() >= 3 ? std::stoi(args[2]) : 300);
         if (args[0] == "moments" && args.size() >= 3) return momentsBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
