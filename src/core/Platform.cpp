@@ -761,21 +761,36 @@ void Platform::applyFriendship(ServiceType type, const std::string& requester, c
 // 按先后顺序重放消息文件中的社交记录。所有操作都可以重复执行而结果不变（加好友前先看是否已是好友……），
 // 所以本窗口自己写入的记录被再次应用也没有关系；多个窗口最终都得到与记录一致的结果
 void Platform::syncSocial() {
-    std::vector<Record> records = messages_->records("FVDBS");
-    std::map<int, const Record*> requests;
+    // 只读上次应用之后的新记录：每发一条私信都要调用，原来每次把全部记录读出来再跳过，
+    // 1 万条记录时一条私信要多花几毫秒
+    const std::vector<Record> records = messages_->recordsAfter("FVDBS", syncedLine_);
+    if (records.empty()) return;
+    std::map<int, const Record*> requests;   // 申请序号 → 申请
     for (const Record& r : records) {
         if (r.kind == 'F') requests[r.seq] = &r;
     }
+    // 同意的是较早的申请（不在这一批里）时，才把全部申请读出来找
+    std::vector<Record> older;
+    bool olderLoaded = false;
+    auto findRequest = [&](int seq) -> const Record* {
+        auto it = requests.find(seq);
+        if (it == requests.end() && !olderLoaded) {
+            older = messages_->records("F");
+            olderLoaded = true;
+            for (const Record& r : older) requests.emplace(r.seq, &r);
+            it = requests.find(seq);
+        }
+        return it == requests.end() ? nullptr : it->second;
+    };
     int last = syncedLine_;
     for (const Record& r : records) {
-        if (r.line <= syncedLine_) continue;
         last = (std::max)(last, r.line);
         const std::string code = ServiceTypeHelper::code(r.service);
         switch (r.kind) {
         case 'V': {   // 申请序号 A/X 处理人 备注
-            auto it = requests.find(toInt(r.field(0)));
-            if (r.field(1) == "A" && it != requests.end())
-                applyFriendship(r.service, it->second->field(1), it->second->field(0), it->second->field(2), r.field(3));
+            if (r.field(1) != "A") break;
+            if (const Record* request = findRequest(toInt(r.field(0))))
+                applyFriendship(r.service, request->field(1), request->field(0), request->field(2), r.field(3));
             break;
         }
         case 'D':   // 删除者 被删除者

@@ -7,6 +7,7 @@
 //       统计吞吐量、回执延迟（p50 / p90 / p99 / 最大），以及对方实际收到的推送条数。
 //   IMChatBench store <目录> text|sqlite [次数]   存储层微基准
 //   IMChatBench save <数据目录> [次数]             加好友后保存数据文件的耗时
+//   IMChatBench social <目录> text|sqlite [记录数]  社交记录很多时发一条私信的耗时
 // 客户端用的是项目自己的网络库（EventLoop + TcpClient）：threads 个事件循环线程，每个线程负责一部分连接
 #include "EventLoop.h"   // 网络头文件（winsock2.h）必须在其他 Windows 头文件之前
 #include <algorithm>
@@ -390,11 +391,39 @@ int saveBench(std::string dataDir, int times) {
     return 0;
 }
 
+// ======================== social：社交记录很多时发私信 ========================
+
+// 发私信前要先应用新的社交记录（好友申请的结果、删除、拉黑、验证设置），这里测记录很多时一条私信要多久
+int socialBench(std::string dataDir, const std::string& kind, int records) {
+    if (dataDir.back() != '/' && dataDir.back() != '\\') dataDir += '/';
+    std::error_code ec;
+    std::filesystem::remove_all(Util::pathOf(dataDir), ec);
+    Platform platform(dataDir, kind == "sqlite" ? Platform::Storage::SQLITE : Platform::Storage::TEXT);
+    std::string msg;
+    ServiceBase* a = platform.registerUser("甲", ServiceType::QQ, "a1", Date(2000, 1, 1), "上海", "123456", msg);
+    ServiceBase* b = platform.registerUser("乙", ServiceType::QQ, "b1", Date(2000, 1, 1), "上海", "123456", msg);
+    if (!a || !b || !platform.addFriend(*a, b->id(), "", msg)) {
+        std::cerr << "准备账号失败：" << msg << "\n";
+        return 1;
+    }
+    // 直接写入一批好友申请记录（别人之间的，还没有处理），模拟运行了一段时间的服务端
+    for (int i = 0; i < records; ++i)
+        platform.messages().appendRecord('F', ServiceType::QQ, { std::to_string(20000 + i), std::to_string(30000 + i), "-" }, true, "你好");
+    platform.sendPrivate(*a, b->id(), "第一条：应用全部记录", msg);
+    const int times = 1000;
+    const auto start = Clock::now();
+    for (int i = 0; i < times; ++i) platform.sendPrivate(*a, b->id(), "压测 " + std::to_string(i), msg);
+    const double us = std::chrono::duration<double, std::micro>(Clock::now() - start).count() / times;
+    std::printf("%s，%d 条社交记录：发一条私信 %.1f 微秒\n", kind == "sqlite" ? "SQLite" : "文本日志", records, us);
+    return 0;
+}
+
 void usage() {
     std::cout << "用法：\n"
                  "  IMChatBench prepare <数据目录> [用户数=200]\n"
                  "  IMChatBench store <目录> text|sqlite [次数=10000]   存储层微基准\n"
                  "  IMChatBench save <数据目录> [次数=100]   加好友后保存数据文件的耗时（数据目录用 prepare 准备）\n"
+                 "  IMChatBench social <目录> text|sqlite [记录数=10000]   社交记录很多时发一条私信的耗时（目录会被清空）\n"
                  "  IMChatBench run --data <数据目录> [--host 127.0.0.1] [--port 9000] [--clients 200] [--messages 100]\n"
                  "                  [--threads 4] [--window 1] [--group | --remark]\n";
 }
@@ -422,6 +451,7 @@ int main(int argc, char** argv) {
     }
     try {
         if (args[0] == "prepare" && args.size() >= 2) return prepare(args[1], args.size() >= 3 ? std::stoi(args[2]) : 200);
+        if (args[0] == "social" && args.size() >= 3) return socialBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
         if (args[0] == "save" && args.size() >= 2) return saveBench(args[1], args.size() >= 3 ? std::stoi(args[2]) : 100);
         if (args[0] == "store" && args.size() >= 3) return storeBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
         if (args[0] == "run") {

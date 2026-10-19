@@ -51,6 +51,9 @@ public:
     virtual bool appendRecord(char kind, ServiceType service, const std::vector<std::string>& fields, bool timed,
                               const std::string& text = "") = 0;
     virtual std::vector<Record> records(const std::string& kinds) const = 0;   // 指定类型的有效记录，按先后排列
+    // 同上，只要行号大于 afterLine 的：增量应用新记录用（每发一条私信都要先应用新的好友、拉黑记录），
+    // 不必每次把全部记录读出来再跳过已经应用过的
+    virtual std::vector<Record> recordsAfter(const std::string& kinds, int afterLine) const = 0;
     // 已读位置：范围 P 私信（对象是对方）、G 群（对象是群号）、O 朋友圈通知
     virtual int readMark(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader) const = 0;
     virtual void markRead(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader,

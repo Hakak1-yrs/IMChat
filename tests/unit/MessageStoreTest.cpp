@@ -66,6 +66,27 @@ TEST_P(MessageStoreTest, MessagesAndEntityRecordsShareOneSequence) {
     EXPECT_TRUE(both[1].time.empty());
 }
 
+TEST_P(MessageStoreTest, RecordsAfterReturnsOnlyNewerRecords) {
+    MessageStore& s = *store_;
+    s.appendRecord('F', ServiceType::QQ, { "10002", "10001", "-" }, true, "一");
+    s.appendRecord('B', ServiceType::QQ, { "10001", "10009", "1" }, false);
+    s.postPrivate(ServiceType::QQ, "10001", "10002", "消息不是记录");
+    s.appendRecord('P', ServiceType::QQ, { "10001", "all" }, true, "动态：不在要的类型里");
+    s.appendRecord('D', ServiceType::QQ, { "10001", "10002" }, false);
+    const std::vector<Record> all = s.recordsAfter("FBD", 0);
+    ASSERT_EQ(all.size(), 3u);
+    EXPECT_EQ(s.records("FBD").size(), 3u);
+    const std::vector<Record> newer = s.recordsAfter("FBD", all[0].line);   // 从第一条之后
+    ASSERT_EQ(newer.size(), 2u);
+    EXPECT_EQ(newer[0].kind, 'B');
+    EXPECT_EQ(newer[1].kind, 'D');
+    EXPECT_TRUE(s.recordsAfter("FBD", all[2].line).empty());
+    s.appendRecord('V', ServiceType::QQ, { std::to_string(all[0].seq), "A", "-", "-" }, false);
+    const std::vector<Record> latest = s.recordsAfter("FVBD", all[2].line);   // 之后追加的
+    ASSERT_EQ(latest.size(), 1u);
+    EXPECT_EQ(latest[0].kind, 'V');
+}
+
 TEST_P(MessageStoreTest, QueriesFilterAndOrderMessages) {
     MessageStore& s = *store_;
     s.postPrivate(ServiceType::QQ, "10001", "10002", "a");

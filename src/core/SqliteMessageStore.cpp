@@ -550,10 +550,13 @@ std::map<int, int> SqliteMessageStore::unreadGroups(ServiceType service, const s
     return result;
 }
 
-std::vector<Record> SqliteMessageStore::records(const std::string& kinds) const {
+std::vector<Record> SqliteMessageStore::records(const std::string& kinds) const { return recordsAfter(kinds, 0); }
+
+std::vector<Record> SqliteMessageStore::recordsAfter(const std::string& kinds, int afterLine) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    Query query(statement("SELECT line, kind, seq, service, fields, time, text FROM records WHERE instr(?1, kind) > 0 ORDER BY line"));
-    query.bind(1, kinds);
+    // line 是主键：line > ? 直接从主键的这个位置往后读
+    Query query(statement("SELECT line, kind, seq, service, fields, time, text FROM records WHERE line > ?2 AND instr(?1, kind) > 0 ORDER BY line"));
+    query.bind(1, kinds).bind(2, afterLine);
     std::vector<Record> result;
     while (query.next()) {
         Record r;

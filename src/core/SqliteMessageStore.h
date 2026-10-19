@@ -52,6 +52,7 @@ public:
     bool appendRecord(char kind, ServiceType service, const std::vector<std::string>& fields, bool timed,
                       const std::string& text = "") override;
     std::vector<Record> records(const std::string& kinds) const override;
+    std::vector<Record> recordsAfter(const std::string& kinds, int afterLine) const override;
     int readMark(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader) const override;
     void markRead(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader, int seq) override;
     bool setCommitScheduler(Scheduler schedule) override;   // schedule 只能排队，不能立即执行任务

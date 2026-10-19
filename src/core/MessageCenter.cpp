@@ -191,11 +191,16 @@ MessageCenter::Snapshot MessageCenter::snapshot() const {
 
 // ======================== 事件记录 ========================
 
-std::vector<Record> MessageCenter::records(const std::string& kinds) const {
+std::vector<Record> MessageCenter::records(const std::string& kinds) const { return recordsAfter(kinds, 0); }
+
+std::vector<Record> MessageCenter::recordsAfter(const std::string& kinds, int afterLine) const {
     std::lock_guard<std::mutex> lock(mutex_);
+    const std::vector<Record>& all = refresh().records;
+    // 记录按行号递增排列（解析顺序）：二分找到 afterLine 之后的第一条
+    auto it = std::upper_bound(all.begin(), all.end(), afterLine, [](int line, const Record& r) { return line < r.line; });
     std::vector<Record> result;
-    for (const Record& r : refresh().records) {
-        if (kinds.find(r.kind) != std::string::npos) result.push_back(r);
+    for (; it != all.end(); ++it) {
+        if (kinds.find(it->kind) != std::string::npos) result.push_back(*it);
     }
     return result;
 }
