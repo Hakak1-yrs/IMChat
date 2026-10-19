@@ -99,6 +99,7 @@ private:
     void flushPending();
     void heartbeat();
     void deliver(const nlohmann::json& message, bool history);
+    void advanceSynced(int seq);   // 同步位置前进到 seq，顺便清理 delivered_ 里用不着的序号
     void setState(State state);
     std::string enqueue(nlohmann::json request);
     std::string newClientMsgId();
@@ -117,7 +118,7 @@ private:
     std::optional<Credentials> credentials_;
     std::deque<std::string> pendingOrder_;                      // 待确认消息的发送顺序
     std::unordered_map<std::string, nlohmann::json> pending_;   // clientMsgId → 请求
-    std::unordered_set<int> delivered_;                         // 已经通知过的消息序号
+    std::unordered_set<int> delivered_;                         // 同步位置之后、已经通知过的消息序号
     int syncedSeq_ = 0;     // 这个序号之前的消息都收到了：重新登录后从这里同步
     bool synced_ = false;   // 本次登录后的同步已经完成（之后推送来的消息是连续的）
     std::unordered_map<int, CallDone> calls_;                   // reqId → 等待结果的通用请求

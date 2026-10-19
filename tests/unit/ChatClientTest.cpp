@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -180,6 +181,54 @@ TEST_F(ChatClientTest, ReadReceiptAndGroupMessages) {
     EXPECT_EQ(zhangEvents.read([&] { return zhangEvents.receipts[0]["reader"]; }), "10002");
 }
 
+namespace {
+
+// 按脚本应答的假服务端：收到的每个请求交给 onPacket（在服务端线程里调用），用来精确地制造某种时序
+class ScriptedServer {
+public:
+    using Handler = std::function<void(const TcpConnection::Ptr&, const Packet&)>;
+
+    explicit ScriptedServer(Handler onPacket)
+        : onPacket_(std::move(onPacket)),
+          thread_(
+              [this](EventLoop& loop) {
+                  server_ = std::make_unique<TcpServer>(loop);
+                  server_->setMessageCallback([this](const TcpConnection::Ptr& c, Buffer& buffer) {
+                      Frame frame;
+                      std::size_t consumed = 0;
+                      while (Frame::decode(buffer.peek(), buffer.readableBytes(), frame, consumed) == Frame::DecodeResult::OK) {
+                          buffer.retrieve(consumed);
+                          if (std::optional<Packet> packet = Packet::fromFrame(frame)) onPacket_(c, *packet);
+                      }
+                  });
+                  std::string error;
+                  if (!server_->listen("127.0.0.1", 0, error)) throw std::runtime_error(error);
+                  port_ = server_->port();
+              },
+              [this] { server_.reset(); }) {}
+
+    std::uint16_t port() const { return port_; }
+
+    static void reply(const TcpConnection::Ptr& c, MessageType type, json body) {
+        Packet packet;
+        packet.type = type;
+        packet.body = std::move(body);
+        c->send(packet.encode());
+    }
+    static json message(int seq) {
+        return json{ { "seq", seq }, { "service", "QQ" }, { "from", "10001" }, { "to", "10002" }, { "text", "第 " + std::to_string(seq) + " 条" },
+                     { "time", "2026-10-18 12:00:00" } };
+    }
+
+private:
+    Handler onPacket_;
+    std::unique_ptr<TcpServer> server_;
+    std::uint16_t port_ = 0;
+    LoopThread thread_;   // 最后一个成员：先停线程（销毁 server_），再销毁其他成员
+};
+
+}  // namespace
+
 // 分批同步的途中推送来一条更新的消息，然后断线：下次登录要从同步到的位置接着要，
 // 而不是从推送来的那条（否则中间的消息永远收不到了）。
 // 用按脚本应答的假服务端，才能精确地在这个时刻断线
@@ -190,19 +239,9 @@ TEST(ChatClientSyncTest, ResumesFromTheLastSyncedBatchNotFromANewerPush) {
     int logins = 0;                // 以下只在服务端线程里访问
     bool awaitingFirstSync = false;
     bool roundDone = false;
-    std::unique_ptr<TcpServer> server;
-    std::uint16_t port = 0;
-    auto reply = [](const TcpConnection::Ptr& c, MessageType type, json body) {
-        Packet packet;
-        packet.type = type;
-        packet.body = std::move(body);
-        c->send(packet.encode());
-    };
-    auto message = [](int seq) {
-        return json{ { "seq", seq }, { "service", "QQ" }, { "from", "10001" }, { "to", "10002" }, { "text", "第 " + std::to_string(seq) + " 条" },
-                     { "time", "2026-10-18 12:00:00" } };
-    };
-    auto onPacket = [&](const TcpConnection::Ptr& c, const Packet& packet) {
+    auto reply = &ScriptedServer::reply;
+    auto message = &ScriptedServer::message;
+    ScriptedServer server([&](const TcpConnection::Ptr& c, const Packet& packet) {
         json body = { { "reqId", packet.body.value("reqId", 0) } };
         if (packet.type == MessageType::LOGIN_REQ) {
             ++logins;
@@ -246,27 +285,11 @@ TEST(ChatClientSyncTest, ResumesFromTheLastSyncedBatchNotFromANewerPush) {
             body["hasMore"] = false;
             reply(c, MessageType::SYNC_RESP, body);
         }
-    };
-    LoopThread thread(
-        [&](EventLoop& loop) {
-            server = std::make_unique<TcpServer>(loop);
-            server->setMessageCallback([&](const TcpConnection::Ptr& c, Buffer& buffer) {
-                Frame frame;
-                std::size_t consumed = 0;
-                while (Frame::decode(buffer.peek(), buffer.readableBytes(), frame, consumed) == Frame::DecodeResult::OK) {
-                    buffer.retrieve(consumed);
-                    if (std::optional<Packet> packet = Packet::fromFrame(frame)) onPacket(c, *packet);
-                }
-            });
-            std::string error;
-            if (!server->listen("127.0.0.1", 0, error)) throw std::runtime_error(error);
-            port = server->port();
-        },
-        [&] { server.reset(); });
+    });
 
     Recorder events;
     ChatClient client(events.callbacks(), fastOptions());
-    client.start("127.0.0.1", port);
+    client.start("127.0.0.1", server.port());
     client.login("QQ", "10002", "123456");
     // 1～11 全部收到
     ASSERT_TRUE(events.waitFor([&] { return events.messages.size() == 11; }));
@@ -284,6 +307,37 @@ TEST(ChatClientSyncTest, ResumesFromTheLastSyncedBatchNotFromANewerPush) {
     EXPECT_EQ(firstSyncs[0], 0);
     EXPECT_EQ(firstSyncs[1], 1);
     EXPECT_EQ(firstSyncs[2], 11);
+}
+
+// 客户端只记"同步位置之后"通知过的序号，记多了会清理；清理之后，重复的推送（旧序号）仍然不会再通知一次
+TEST(ChatClientSyncTest, DuplicatesAreStillDroppedAfterTheSeenSetIsPruned) {
+    Log::setLevel(Log::Level::WARN);
+    auto reply = &ScriptedServer::reply;
+    auto message = &ScriptedServer::message;
+    ScriptedServer server([&](const TcpConnection::Ptr& c, const Packet& packet) {
+        json body = { { "reqId", packet.body.value("reqId", 0) } };
+        if (packet.type == MessageType::LOGIN_REQ) {
+            body["ok"] = true;
+            reply(c, MessageType::LOGIN_RESP, body);
+        } else if (packet.type == MessageType::SYNC_REQ) {   // 没有离线消息；之后推送 1～1500，再重复推送几条旧的，最后一条新的
+            body["messages"] = json::array();
+            body["hasMore"] = false;
+            reply(c, MessageType::SYNC_RESP, body);
+            for (int seq = 1; seq <= 1500; ++seq) reply(c, MessageType::MSG_PUSH, message(seq));
+            for (int seq : { 3, 700, 1500 }) reply(c, MessageType::MSG_PUSH, message(seq));
+            reply(c, MessageType::MSG_PUSH, message(1501));
+        }
+    });
+
+    Recorder events;
+    ChatClient client(events.callbacks(), fastOptions());
+    client.start("127.0.0.1", server.port());
+    client.login("QQ", "10002", "123456");
+    ASSERT_TRUE(events.waitFor([&] { return events.messages.size() >= 1501; }, 10s));
+    std::this_thread::sleep_for(100ms);
+    client.stop();
+    EXPECT_EQ(events.read([&] { return events.messages.size(); }), 1501u);
+    EXPECT_EQ(client.lastSeq(), 1501);
 }
 
 TEST_F(ChatClientTest, KickedClientDoesNotReconnect) {

@@ -226,12 +226,12 @@ void ChatClient::handleSyncResponse(const json& body) {
     if (body.value("hasMore", false) && cursor > 0) {
         // 还有：从这一批的最后一条之后接着要。途中推送来的更新的消息不算数——它和这一批之间还缺着，
         // 这时断线的话，下次要从这里接着同步，而不是从收到的最大序号
-        syncedSeq_ = std::max(syncedSeq_, cursor);
+        advanceSynced(cursor);
         requestSync(cursor);
         return;
     }
     // 同步完成：服务端此刻以前的都收到了，登录以后的新消息都会推送过来，所以收到的最大序号以前全齐了
-    syncedSeq_ = std::max(syncedSeq_, lastSeq_.load());
+    advanceSynced(lastSeq_.load());
     synced_ = true;
     flushPending();
 }
@@ -286,10 +286,19 @@ void ChatClient::heartbeat() {
 
 void ChatClient::deliver(const json& message, bool history) {
     const int seq = message.value("seq", 0);
-    if (seq <= 0 || !delivered_.insert(seq).second) return;   // 已经通知过（推送和同步重叠，或是自己发的）
+    // 已经通知过：同步位置以前的一定都通知过了；之后的查 delivered_（推送和同步重叠，或是自己发的）
+    if (seq <= 0 || seq <= syncedSeq_ || !delivered_.insert(seq).second) return;
     if (seq > lastSeq_) lastSeq_ = seq;
-    if (synced_ && seq > syncedSeq_) syncedSeq_ = seq;   // 同步完成后推送来的消息是连续的
+    if (synced_ && seq > syncedSeq_) advanceSynced(seq);   // 同步完成后推送来的消息是连续的
     if (callbacks_.onMessage) callbacks_.onMessage(message, history);
+}
+
+void ChatClient::advanceSynced(int seq) {
+    if (seq <= syncedSeq_) return;
+    syncedSeq_ = seq;
+    // 同步位置以前的序号不必再记：deliver 直接按位置判断。否则客户端开得越久，这个集合越大
+    if (delivered_.size() < 1024) return;
+    for (auto it = delivered_.begin(); it != delivered_.end();) it = *it <= syncedSeq_ ? delivered_.erase(it) : std::next(it);
 }
 
 void ChatClient::setState(State state) {
