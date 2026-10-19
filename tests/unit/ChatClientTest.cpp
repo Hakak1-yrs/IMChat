@@ -3,8 +3,12 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+#include "Buffer.h"
 #include "ChatClient.h"
+#include "Frame.h"
 #include "Log.h"
+#include "LoopThread.h"
+#include "TcpServer.h"
 #include "TestServer.h"
 
 using namespace std::chrono_literals;
@@ -174,6 +178,112 @@ TEST_F(ChatClientTest, ReadReceiptAndGroupMessages) {
     li->markRead("10001", li->lastSeq());
     ASSERT_TRUE(zhangEvents.waitFor([&] { return zhangEvents.receipts.size() == 1; }));
     EXPECT_EQ(zhangEvents.read([&] { return zhangEvents.receipts[0]["reader"]; }), "10002");
+}
+
+// 分批同步的途中推送来一条更新的消息，然后断线：下次登录要从同步到的位置接着要，
+// 而不是从推送来的那条（否则中间的消息永远收不到了）。
+// 用按脚本应答的假服务端，才能精确地在这个时刻断线
+TEST(ChatClientSyncTest, ResumesFromTheLastSyncedBatchNotFromANewerPush) {
+    Log::setLevel(Log::Level::WARN);
+    std::mutex mutex;
+    std::vector<int> firstSyncs;   // 每次登录后第一次同步请求的 afterSeq（测试线程读取）
+    int logins = 0;                // 以下只在服务端线程里访问
+    bool awaitingFirstSync = false;
+    bool roundDone = false;
+    std::unique_ptr<TcpServer> server;
+    std::uint16_t port = 0;
+    auto reply = [](const TcpConnection::Ptr& c, MessageType type, json body) {
+        Packet packet;
+        packet.type = type;
+        packet.body = std::move(body);
+        c->send(packet.encode());
+    };
+    auto message = [](int seq) {
+        return json{ { "seq", seq }, { "service", "QQ" }, { "from", "10001" }, { "to", "10002" }, { "text", "第 " + std::to_string(seq) + " 条" },
+                     { "time", "2026-10-18 12:00:00" } };
+    };
+    auto onPacket = [&](const TcpConnection::Ptr& c, const Packet& packet) {
+        json body = { { "reqId", packet.body.value("reqId", 0) } };
+        if (packet.type == MessageType::LOGIN_REQ) {
+            ++logins;
+            awaitingFirstSync = true;
+            roundDone = false;
+            body["ok"] = true;
+            body["token"] = "token";
+            reply(c, MessageType::LOGIN_RESP, body);
+            return;
+        }
+        if (packet.type == MessageType::PING && roundDone) {   // 这一轮的推送已经发出：断开，让客户端重连
+            c->shutdownAfterFlush();
+            return;
+        }
+        if (packet.type != MessageType::SYNC_REQ) return;
+        const int afterSeq = packet.body.value("afterSeq", 0);
+        if (!awaitingFirstSync) {   // 第一轮中途的第二批请求：不回答，直接断开（推送已经在它之前送到）
+            c->shutdownAfterFlush();
+            return;
+        }
+        awaitingFirstSync = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            firstSyncs.push_back(afterSeq);
+        }
+        if (logins == 1) {          // 第一批只给第 1 条，说还有；紧接着推送一条新消息 10
+            body["messages"] = json::array({ message(1) });
+            body["hasMore"] = true;
+            reply(c, MessageType::SYNC_RESP, body);
+            reply(c, MessageType::MSG_PUSH, message(10));
+        } else if (logins == 2) {   // 补齐 2～9，同步完成；之后又推送一条 11
+            json messages = json::array();
+            for (int seq = 2; seq <= 9; ++seq) messages.push_back(message(seq));
+            body["messages"] = messages;
+            body["hasMore"] = false;
+            reply(c, MessageType::SYNC_RESP, body);
+            reply(c, MessageType::MSG_PUSH, message(11));
+            roundDone = true;
+        } else {
+            body["messages"] = json::array();
+            body["hasMore"] = false;
+            reply(c, MessageType::SYNC_RESP, body);
+        }
+    };
+    LoopThread thread(
+        [&](EventLoop& loop) {
+            server = std::make_unique<TcpServer>(loop);
+            server->setMessageCallback([&](const TcpConnection::Ptr& c, Buffer& buffer) {
+                Frame frame;
+                std::size_t consumed = 0;
+                while (Frame::decode(buffer.peek(), buffer.readableBytes(), frame, consumed) == Frame::DecodeResult::OK) {
+                    buffer.retrieve(consumed);
+                    if (std::optional<Packet> packet = Packet::fromFrame(frame)) onPacket(c, *packet);
+                }
+            });
+            std::string error;
+            if (!server->listen("127.0.0.1", 0, error)) throw std::runtime_error(error);
+            port = server->port();
+        },
+        [&] { server.reset(); });
+
+    Recorder events;
+    ChatClient client(events.callbacks(), fastOptions());
+    client.start("127.0.0.1", port);
+    client.login("QQ", "10002", "123456");
+    // 1～11 全部收到
+    ASSERT_TRUE(events.waitFor([&] { return events.messages.size() == 11; }));
+    for (int i = 0; i < 100; ++i) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (firstSyncs.size() >= 3) break;
+        }
+        std::this_thread::sleep_for(20ms);
+    }
+    client.stop();
+    std::lock_guard<std::mutex> lock(mutex);
+    // 第一次从头；第二次从第一批的末尾 1（不是推送来的 10）；第三次同步完成后，推送来的 11 之前都齐了
+    ASSERT_GE(firstSyncs.size(), 3u);
+    EXPECT_EQ(firstSyncs[0], 0);
+    EXPECT_EQ(firstSyncs[1], 1);
+    EXPECT_EQ(firstSyncs[2], 11);
 }
 
 TEST_F(ChatClientTest, KickedClientDoesNotReconnect) {

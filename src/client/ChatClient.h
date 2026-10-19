@@ -24,7 +24,8 @@ class TcpConnection;
 // 可靠性：
 // - 每条要发的消息先进入“待确认”队列，收到服务端回执才移除。断线期间发的消息，以及发出后还没等到回执就断线的消息，
 //   重新连上并登录后按原顺序、用原来的 clientMsgId 重发；服务端按 clientMsgId 去重，所以不会丢，也不会重复。
-// - 收到的消息记下最大序号，重新登录后从这个序号之后同步，离线期间的消息一条不落；
+// - 记下“这个序号之前的消息都已经收到”的位置，重新登录后从它之后同步，离线期间的消息一条不落。
+//   它不一定是收到的最大序号：分批同步的途中可能推送来更新的消息，这时中间还缺着，要等同步完成才能前进到那里；
 //   推送和同步可能重叠，同一条消息（同一序号）只通知一次。
 // - 心跳：定期发 PING；太久没收到服务端的任何数据，就认为连接已经失效（比如网络被切断），主动断开并重连
 class ChatClient {
@@ -117,6 +118,8 @@ private:
     std::deque<std::string> pendingOrder_;                      // 待确认消息的发送顺序
     std::unordered_map<std::string, nlohmann::json> pending_;   // clientMsgId → 请求
     std::unordered_set<int> delivered_;                         // 已经通知过的消息序号
+    int syncedSeq_ = 0;     // 这个序号之前的消息都收到了：重新登录后从这里同步
+    bool synced_ = false;   // 本次登录后的同步已经完成（之后推送来的消息是连续的）
     std::unordered_map<int, CallDone> calls_;                   // reqId → 等待结果的通用请求
     int nextReqId_ = 1;
     std::uint64_t idCounter_ = 0;

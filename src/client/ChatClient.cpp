@@ -209,7 +209,8 @@ void ChatClient::handleLoginResponse(const json& body) {
             credentials_->password.clear();
         }
         setState(State::LOGGED_IN);
-        requestSync(lastSeq_);   // 先补齐离线期间的消息，同步完再重发待确认的消息
+        synced_ = false;
+        requestSync(syncedSeq_);   // 先补齐离线期间的消息，同步完再重发待确认的消息
     } else {
         credentials_.reset();    // 密码错误等：重连后不再用这组信息自动登录
     }
@@ -222,8 +223,17 @@ void ChatClient::handleSyncResponse(const json& body) {
         deliver(message, true);
         cursor = std::max(cursor, message.value("seq", 0));
     }
-    if (body.value("hasMore", false) && cursor > 0) requestSync(cursor);   // 还有：从这一批的最后一条之后接着要
-    else flushPending();
+    if (body.value("hasMore", false) && cursor > 0) {
+        // 还有：从这一批的最后一条之后接着要。途中推送来的更新的消息不算数——它和这一批之间还缺着，
+        // 这时断线的话，下次要从这里接着同步，而不是从收到的最大序号
+        syncedSeq_ = std::max(syncedSeq_, cursor);
+        requestSync(cursor);
+        return;
+    }
+    // 同步完成：服务端此刻以前的都收到了，登录以后的新消息都会推送过来，所以收到的最大序号以前全齐了
+    syncedSeq_ = std::max(syncedSeq_, lastSeq_.load());
+    synced_ = true;
+    flushPending();
 }
 
 void ChatClient::handleAck(const json& body) {
@@ -278,6 +288,7 @@ void ChatClient::deliver(const json& message, bool history) {
     const int seq = message.value("seq", 0);
     if (seq <= 0 || !delivered_.insert(seq).second) return;   // 已经通知过（推送和同步重叠，或是自己发的）
     if (seq > lastSeq_) lastSeq_ = seq;
+    if (synced_ && seq > syncedSeq_) syncedSeq_ = seq;   // 同步完成后推送来的消息是连续的
     if (callbacks_.onMessage) callbacks_.onMessage(message, history);
 }
 
