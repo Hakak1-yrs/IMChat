@@ -169,6 +169,23 @@ TEST_F(ChatServerTest, IdleConnectionsAreClosedButHeartbeatsKeepThemAlive) {
     EXPECT_EQ(pong->type, MessageType::PONG);
 }
 
+TEST_F(ChatServerTest, ConnectionsThatNeverLogInAreClosed) {
+    ChatServer::Options options;
+    options.loginTimeout = 200ms;
+    options.idleCheckInterval = 50ms;
+    startServer(options);
+    TestClient anonymous(port_);
+    TestClient zhang(port_);
+    ASSERT_EQ(zhang.login("QQ", "10001")["ok"], true);
+    anonymous.send(MessageType::PING);   // 只发心跳不登录：照样到时断开
+    EXPECT_TRUE(anonymous.closedByPeer());
+    std::this_thread::sleep_for(100ms);
+    zhang.send(MessageType::PING);   // 登录了的不受影响
+    std::optional<Packet> pong = zhang.receive();
+    ASSERT_TRUE(pong);
+    EXPECT_EQ(pong->type, MessageType::PONG);
+}
+
 TEST_F(ChatServerTest, InvalidLengthClosesConnection) {
     startServer();
     TestClient client(port_);

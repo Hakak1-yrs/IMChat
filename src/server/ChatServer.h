@@ -32,6 +32,9 @@ public:
         std::uint16_t port = 9000;
         std::chrono::milliseconds idleTimeout{ 90000 };   // 这么久没有收到任何数据（包括心跳）就断开
         std::chrono::milliseconds idleCheckInterval{ 5000 };
+        // 连上以后这么久还没登录就断开（0 表示不限）：不登录的连接只能发心跳，没有理由一直占着；
+        // 否则有人可以开一大堆连接、隔一会儿发一个字节，长期占满连接数上限
+        std::chrono::milliseconds loginTimeout{ 30000 };
         std::string tokenSecret;   // 登录令牌的签名密钥；为空时随机生成（服务端重启后旧令牌失效）
         // 另开的 I/O 线程数。为 0 时接受连接、收发和业务处理都在一个线程里；
         // 大于 0 时收发、切帧、解析 JSON 在 I/O 线程里做，业务处理仍在一个线程里（Platform 不需要加锁）
@@ -62,6 +65,7 @@ private:
     // 一条连接上的会话状态
     struct Session {
         TcpConnection::Ptr connection;
+        std::chrono::steady_clock::time_point connectedAt{};
         bool loggedIn = false;
         std::string accountKey;   // "QQ 10001"
         double tokens = 0;        // 令牌桶里剩下的令牌

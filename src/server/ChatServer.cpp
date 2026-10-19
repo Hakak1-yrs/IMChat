@@ -128,7 +128,9 @@ std::size_t ChatServer::onlineCount() const { return online_.size(); }
 
 void ChatServer::onConnection(const TcpConnection::Ptr& connection) {
     loop_.runInLoop([this, connection] {
-        sessions_[connection->id()].connection = connection;
+        Session& session = sessions_[connection->id()];
+        session.connection = connection;
+        session.connectedAt = std::chrono::steady_clock::now();
         Log::debug("新连接 #" + std::to_string(connection->id()) + " 来自 " + connection->peer());
     });
 }
@@ -1083,11 +1085,19 @@ void ChatServer::closeIdleConnections() {
         it = stale ? recent_.erase(it) : std::next(it);
     }
     std::vector<TcpConnection::Ptr> idle;   // 先收集再关闭：关闭会从 sessions_ 中删除，不能边遍历边删
+    std::vector<TcpConnection::Ptr> anonymous;   // 连上以后迟迟不登录的
     for (const auto& entry : sessions_) {
-        if (now - entry.second.connection->lastReceive() > options_.idleTimeout) idle.push_back(entry.second.connection);
+        const Session& session = entry.second;
+        if (now - session.connection->lastReceive() > options_.idleTimeout) idle.push_back(session.connection);
+        else if (!session.loggedIn && options_.loginTimeout.count() > 0 && now - session.connectedAt > options_.loginTimeout)
+            anonymous.push_back(session.connection);
     }
     for (const TcpConnection::Ptr& connection : idle) {
         Log::info("连接 " + connection->peer() + " 长时间没有心跳，断开");
+        connection->forceClose();
+    }
+    for (const TcpConnection::Ptr& connection : anonymous) {
+        Log::info("连接 " + connection->peer() + " 连上后一直没有登录，断开");
         connection->forceClose();
     }
 }

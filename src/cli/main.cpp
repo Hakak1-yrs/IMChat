@@ -153,12 +153,17 @@ int main(int argc, char** argv) {
     callbacks.onError = [](const json& error) { print("* 服务端错误：" + error.value("message", "")); };
 
     ChatClient client(callbacks);
-    print("IMChat 命令行客户端，连接 " + host + ":" + std::to_string(port) + "。输入 /help 查看命令。");
-    client.start(host, port);
+    print("IMChat 命令行客户端，服务器 " + host + ":" + std::to_string(port) + "。输入 /help 查看命令。");
+    bool started = false;
     auto doLogin = [&](const std::string& service, const std::string& account, const std::string& password) {
         {
             std::lock_guard<std::mutex> lock(stateMutex);
             me = account;
+        }
+        // 第一次登录时才连接：服务端会断开连上后迟迟不登录的连接
+        if (!started) {
+            client.start(host, port);
+            started = true;
         }
         client.login(service, account, password);
     };
@@ -182,6 +187,8 @@ int main(int argc, char** argv) {
             std::string service, account, password;
             in >> service >> account >> password;
             doLogin(service, account, password);
+        } else if (!started) {   // 还没连接（第一次登录时才连）
+            print("* 请先用 /login 登录");
         } else if (command == "/to" || command == "/g") {
             std::string target;
             in >> target;
