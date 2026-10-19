@@ -53,6 +53,8 @@ public:
                       const std::string& text = "") override;
     std::vector<Record> records(const std::string& kinds) const override;
     std::vector<Record> recordsAfter(const std::string& kinds, int afterLine) const override;
+    int recordClears() const override;
+    int lastRecordLine() const override;   // 已解析的行数（记录的行号就是它在文件里的行号）
     int readMark(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader) const override;
     void markRead(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader, int seq) override;
 
@@ -73,6 +75,7 @@ private:
         std::map<std::string, int> readMarks;     // "服务 范围 对象 读者" → 已读到的序号
         std::map<std::string, std::string> revokedBy;   // "服务 序号" → 撤回者
         int count = 0;                            // 已分配的最大序号
+        int recordClears = 0;                     // 账号注销清除记录的次数
         int lineNo = 0;                           // 已解析的行数
         unsigned long long offset = 0;            // 已解析到文件的哪个字节（之后都是新追加的）
     };

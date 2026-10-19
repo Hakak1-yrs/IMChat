@@ -12,6 +12,7 @@
 #include "GroupManager.h"
 #include "MessageStore.h"
 #include "Moment.h"
+#include "MomentFeed.h"
 #include "ServiceBase.h"
 #include "User.h"
 
@@ -146,6 +147,7 @@ private:
     static std::string accountKey(ServiceType type, const std::string& id);
     bool friendsBothWays(ServiceType type, const std::string& a, const std::string& b) const;
     bool canSeeMoment(ServiceType type, const std::string& viewer, const std::string& author, const std::string& scope) const;
+    const MomentFeed::Post* visibleMoment(const ServiceBase& me, int seq);   // me 能看到的这条动态（不存在或看不到时为空）
     void applyFriendship(ServiceType type, const std::string& requester, const std::string& target,
                          const std::string& requesterRemark, const std::string& targetRemark);
     static std::unique_ptr<ServiceBase> createService(ServiceType type, const std::string& id, int ownerId,
@@ -175,6 +177,7 @@ private:
     std::map<int, User> users_;
     GroupManager groups_;
     std::unique_ptr<MessageStore> messages_;
+    MomentFeed feed_;                  // 朋友圈的内存索引（由 messages_ 里的记录增量构建）
     std::set<std::string> blocked_;    // "服务 拉黑者 对方"
     std::set<std::string> noVerify_;   // "服务 账号"：加好友不需要验证（默认需要）
     int syncedLine_ = 0;               // 消息文件中已经应用到内存的记录位置

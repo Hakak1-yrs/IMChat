@@ -193,6 +193,16 @@ MessageCenter::Snapshot MessageCenter::snapshot() const {
 
 std::vector<Record> MessageCenter::records(const std::string& kinds) const { return recordsAfter(kinds, 0); }
 
+int MessageCenter::lastRecordLine() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return refresh().lineNo;
+}
+
+int MessageCenter::recordClears() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return refresh().recordClears;
+}
+
 std::vector<Record> MessageCenter::recordsAfter(const std::string& kinds, int afterLine) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const std::vector<Record>& all = refresh().records;
@@ -337,6 +347,7 @@ void MessageCenter::clear(State& state, const std::string& code, const std::stri
         it = related ? state.messages.erase(it) : std::next(it);
     }
     if (scope != "A") return;
+    ++state.recordClears;
     state.records.erase(std::remove_if(state.records.begin(), state.records.end(),
                                        [&](const Record& r) {
                                            if (ServiceTypeHelper::code(r.service) != code) return false;

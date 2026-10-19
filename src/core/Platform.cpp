@@ -74,7 +74,7 @@ std::unique_ptr<MessageStore> createStore(const std::string& dataDir, Platform::
 }  // namespace
 
 Platform::Platform(const std::string& dataDir, Storage storage)
-    : dataDir_(dataDir), sessionStamp_(Date::nowStamp()), messages_(createStore(dataDir, storage)),
+    : dataDir_(dataDir), sessionStamp_(Date::nowStamp()), messages_(createStore(dataDir, storage)), feed_(*messages_),
       usersFile_(dataDir, "users.txt"), accountsFile_(dataDir, "accounts.txt"), friendsFile_(dataDir, "friends.txt"),
       groupsFile_(dataDir, "groups.txt"), subGroupsFile_(dataDir, "subgroups.txt") {
     // 文件缺失时以空数据启动，退出时会自动创建数据文件
@@ -762,9 +762,11 @@ void Platform::applyFriendship(ServiceType type, const std::string& requester, c
 // 所以本窗口自己写入的记录被再次应用也没有关系；多个窗口最终都得到与记录一致的结果
 void Platform::syncSocial() {
     // 只读上次应用之后的新记录：每发一条私信都要调用，原来每次把全部记录读出来再跳过，
-    // 1 万条记录时一条私信要多花几毫秒
+    // 1 万条记录时一条私信要多花几毫秒。
+    // 位置前进到最后一条记录（不分类型），否则中间大量的朋友圈记录每次都要重新扫一遍
+    const int end = messages_->lastRecordLine();
+    if (end <= syncedLine_) return;
     const std::vector<Record> records = messages_->recordsAfter("FVDBS", syncedLine_);
-    if (records.empty()) return;
     std::map<int, const Record*> requests;   // 申请序号 → 申请
     for (const Record& r : records) {
         if (r.kind == 'F') requests[r.seq] = &r;
@@ -782,9 +784,9 @@ void Platform::syncSocial() {
         }
         return it == requests.end() ? nullptr : it->second;
     };
-    int last = syncedLine_;
+    int last = end;
     for (const Record& r : records) {
-        last = (std::max)(last, r.line);
+        last = (std::max)(last, r.line);   // 读完位置之后、读记录之前别的窗口又写了几条：也已经应用了
         const std::string code = ServiceTypeHelper::code(r.service);
         switch (r.kind) {
         case 'V': {   // 申请序号 A/X 处理人 备注
@@ -1051,157 +1053,139 @@ bool Platform::postMoment(const ServiceBase& me, const std::string& text, const 
 
 std::vector<Moment> Platform::moments(const ServiceBase& viewer, const std::string& author) {
     syncSocial();
+    feed_.refresh();
     const ServiceType type = viewer.type();
-    const std::vector<Record> records = messages_->records("PLKYZ");
-    std::set<int> deletedPosts, deletedComments;
-    for (const Record& r : records) {
-        if (r.kind == 'Y') deletedPosts.insert(toInt(r.field(0)));
-        if (r.kind == 'Z') deletedComments.insert(toInt(r.field(0)));
-    }
-    std::map<int, Moment> posts;
-    for (const Record& r : records) {
-        if (r.kind != 'P' || r.service != type || deletedPosts.count(r.seq)) continue;
-        if (!author.empty() && r.field(0) != author) continue;
-        if (!canSeeMoment(type, viewer.id(), r.field(0), r.field(1))) continue;
-        Moment m;
-        m.seq = r.seq;
-        m.service = type;
-        m.author = r.field(0);
-        m.scope = r.field(1);
-        m.time = r.time;
-        m.text = r.text;
-        posts[r.seq] = m;
+    // 能看到的只有自己和好友的动态（canSeeMoment 要求互为好友），所以只看这些人的，不必遍历所有人的动态
+    std::vector<std::string> authors;
+    if (!author.empty()) {
+        authors.push_back(author);
+    } else {
+        authors.push_back(viewer.id());
+        for (const Friend& f : viewer.friends().all()) authors.push_back(f.id());
     }
     // 只显示查看者能看到的人的点赞和评论：作者本人看全部，其他人只看共同好友的
-    auto visible = [&](const Moment& m, const std::string& person) {
-        return viewer.id() == m.author || person == viewer.id() || friendsBothWays(type, viewer.id(), person);
+    auto visible = [&](const std::string& postAuthor, const std::string& person) {
+        return viewer.id() == postAuthor || person == viewer.id() || friendsBothWays(type, viewer.id(), person);
     };
-    for (const Record& r : records) {
-        if (r.kind != 'L' && r.kind != 'K') continue;   // 这两种记录的第一项是动态序号
-        auto it = posts.find(toInt(r.field(0)));
-        if (it == posts.end()) continue;
-        Moment& m = it->second;
-        if (r.kind == 'L') {   // 按先后顺序处理点赞/取消点赞
-            Util::removeValue(m.likes, r.field(1));
-            if (r.field(2) == "1") m.likes.push_back(r.field(1));
-        } else if (r.kind == 'K' && !deletedComments.count(r.seq) && visible(m, r.field(1))) {
-            MomentComment c;
-            c.seq = r.seq;
-            c.author = r.field(1);
-            c.replyTo = r.field(2) == "-" ? "" : r.field(2);
-            c.time = r.time;
-            c.text = r.text;
-            m.comments.push_back(c);
-        }
-    }
     std::vector<Moment> result;
-    for (auto it = posts.rbegin(); it != posts.rend(); ++it) {
-        Moment m = it->second;
-        std::vector<std::string> likes;
-        for (const std::string& id : m.likes) {
-            if (visible(m, id)) likes.push_back(id);
+    for (const std::string& id : authors) {
+        for (const MomentFeed::Post* p : feed_.postsOf(type, id)) {
+            if (p->deleted || !canSeeMoment(type, viewer.id(), p->author, p->scope)) continue;
+            Moment m;
+            m.seq = p->seq;
+            m.service = type;
+            m.author = p->author;
+            m.scope = p->scope;
+            m.time = p->time;
+            m.text = p->text;
+            for (const std::string& person : p->likes) {
+                if (visible(p->author, person)) m.likes.push_back(person);
+            }
+            for (int commentSeq : p->comments) {
+                const MomentFeed::Comment* c = feed_.comment(commentSeq);
+                if (c && !c->deleted && visible(p->author, c->author)) m.comments.push_back(*c);
+            }
+            result.push_back(std::move(m));
         }
-        m.likes = likes;
-        result.push_back(m);
     }
+    std::sort(result.begin(), result.end(), [](const Moment& a, const Moment& b) { return a.seq > b.seq; });   // 最新的在前
     return result;
 }
 
+const MomentFeed::Post* Platform::visibleMoment(const ServiceBase& me, int seq) {
+    syncSocial();
+    feed_.refresh();
+    const MomentFeed::Post* p = feed_.post(seq);
+    if (!p || p->deleted || p->service != me.type() || !canSeeMoment(me.type(), me.id(), p->author, p->scope)) return nullptr;
+    return p;
+}
+
 bool Platform::toggleLike(const ServiceBase& me, int seq, std::string& msg) {
-    for (const Moment& m : moments(me)) {
-        if (m.seq != seq) continue;
-        const bool liked = m.likedBy(me.id());
-        messages_->appendRecord('L', me.type(), { std::to_string(seq), me.id(), liked ? "0" : "1" }, false);
-        msg = liked ? "已取消赞。" : "已赞。";
-        return true;
+    const MomentFeed::Post* p = visibleMoment(me, seq);
+    if (!p) {
+        msg = "这条动态不存在，或你没有权限查看。";
+        return false;
     }
-    msg = "这条动态不存在，或你没有权限查看。";
-    return false;
+    const bool liked = Util::contains(p->likes, me.id());
+    messages_->appendRecord('L', me.type(), { std::to_string(seq), me.id(), liked ? "0" : "1" }, false);
+    msg = liked ? "已取消赞。" : "已赞。";
+    return true;
 }
 
 bool Platform::commentMoment(const ServiceBase& me, int seq, const std::string& replyTo, const std::string& text,
                                std::string& msg) {
     const std::string line = Util::lineText(text);
     if (!messageTextOk(line, msg)) return false;
-    for (const Moment& m : moments(me)) {
-        if (m.seq != seq) continue;
-        messages_->appendRecord('K', me.type(), { std::to_string(seq), me.id(), replyTo.empty() ? "-" : replyTo }, true, line);
-        msg = replyTo.empty() || replyTo == "-" ? "评论成功。" : "已回复 " + nickOf(me.type(), replyTo) + "。";
-        return true;
+    if (!visibleMoment(me, seq)) {
+        msg = "这条动态不存在，或你没有权限查看。";
+        return false;
     }
-    msg = "这条动态不存在，或你没有权限查看。";
-    return false;
+    messages_->appendRecord('K', me.type(), { std::to_string(seq), me.id(), replyTo.empty() ? "-" : replyTo }, true, line);
+    msg = replyTo.empty() || replyTo == "-" ? "评论成功。" : "已回复 " + nickOf(me.type(), replyTo) + "。";
+    return true;
 }
 
 bool Platform::deleteMoment(const ServiceBase& me, int seq, std::string& msg) {
-    for (const Record& r : messages_->records("P")) {
-        if (r.seq != seq || r.service != me.type()) continue;
-        if (r.field(0) != me.id()) {
-            msg = "只能删除自己的动态。";
-            return false;
-        }
-        messages_->appendRecord('Y', me.type(), { std::to_string(seq) }, false);
-        msg = "动态已删除。";
-        return true;
+    feed_.refresh();
+    const MomentFeed::Post* p = feed_.post(seq);
+    if (!p || p->service != me.type()) {
+        msg = "这条动态不存在。";
+        return false;
     }
-    msg = "这条动态不存在。";
-    return false;
+    if (p->author != me.id()) {
+        msg = "只能删除自己的动态。";
+        return false;
+    }
+    messages_->appendRecord('Y', me.type(), { std::to_string(seq) }, false);
+    msg = "动态已删除。";
+    return true;
 }
 
 bool Platform::deleteComment(const ServiceBase& me, int commentSeq, std::string& msg) {
-    const std::vector<Record> records = messages_->records("PK");
-    for (const Record& c : records) {
-        if (c.kind != 'K' || c.seq != commentSeq || c.service != me.type()) continue;
-        std::string postAuthor;
-        for (const Record& p : records) {
-            if (p.kind == 'P' && p.seq == toInt(c.field(0))) postAuthor = p.field(0);
-        }
-        if (c.field(1) != me.id() && postAuthor != me.id()) {   // 评论者本人或动态作者可以删除
-            msg = "只能删除自己的评论，或自己动态下的评论。";
-            return false;
-        }
-        messages_->appendRecord('Z', me.type(), { std::to_string(commentSeq) }, false);
-        msg = "评论已删除。";
-        return true;
+    feed_.refresh();
+    const MomentFeed::Comment* c = feed_.comment(commentSeq);
+    if (!c || c->service != me.type()) {
+        msg = "这条评论不存在。";
+        return false;
     }
-    msg = "这条评论不存在。";
-    return false;
+    const MomentFeed::Post* p = feed_.post(c->postSeq);
+    if (c->author != me.id() && (!p || p->author != me.id())) {   // 评论者本人或动态作者可以删除
+        msg = "只能删除自己的评论，或自己动态下的评论。";
+        return false;
+    }
+    messages_->appendRecord('Z', me.type(), { std::to_string(commentSeq) }, false);
+    msg = "评论已删除。";
+    return true;
 }
 
 std::vector<std::string> Platform::momentNotices(const ServiceBase& me, bool unreadOnly) {
-    const std::vector<Record> records = messages_->records("PLKYZ");
-    std::map<int, const Record*> posts;
-    std::set<int> deletedPosts, deletedComments;
-    for (const Record& r : records) {
-        if (r.kind == 'P' && r.service == me.type()) posts[r.seq] = &r;
-        if (r.kind == 'Y') deletedPosts.insert(toInt(r.field(0)));
-        if (r.kind == 'Z') deletedComments.insert(toInt(r.field(0)));
-    }
+    feed_.refresh();
     const int mark = unreadOnly ? messages_->readMark(me.type(), "O", "-", me.id()) : 0;
+    const std::vector<MomentFeed::Interaction>& interactions = feed_.interactionsOf(me.type(), me.id());
     std::vector<std::string> result;
-    for (auto it = records.rbegin(); it != records.rend(); ++it) {
-        const Record& r = *it;
-        if ((r.kind != 'L' && r.kind != 'K') || r.seq <= mark || r.field(1) == me.id()) continue;
-        auto post = posts.find(toInt(r.field(0)));
-        if (post == posts.end() || deletedPosts.count(post->first)) continue;
-        const bool myPost = post->second->field(0) == me.id();
-        const std::string who = nickOf(me.type(), r.field(1));
-        const std::string what = "“" + Util::truncate(post->second->text, 12) + "”";
-        if (r.kind == 'L' && myPost && r.field(2) == "1") result.push_back(who + " 赞了你的动态 " + what);
-        if (r.kind == 'K' && !deletedComments.count(r.seq)) {
-            if (r.field(2) == me.id()) result.push_back(who + " 回复了你：" + r.text);
-            else if (myPost) result.push_back(who + " 评论了你的动态 " + what + "：" + r.text);
+    for (auto it = interactions.rbegin(); it != interactions.rend(); ++it) {   // 最新的在前
+        const MomentFeed::Interaction& x = *it;
+        if (x.seq <= mark || x.actor == me.id()) continue;
+        const MomentFeed::Post* post = feed_.post(x.postSeq);
+        if (!post || post->deleted || post->service != me.type()) continue;
+        const bool myPost = post->author == me.id();
+        const std::string who = nickOf(me.type(), x.actor);
+        const std::string what = "“" + Util::truncate(post->text, 12) + "”";
+        if (x.kind == 'L') {
+            if (myPost) result.push_back(who + " 赞了你的动态 " + what);
+            continue;
         }
+        const MomentFeed::Comment* c = feed_.comment(x.seq);
+        if (!c || c->deleted) continue;
+        if (c->replyTo == me.id()) result.push_back(who + " 回复了你：" + c->text);
+        else if (myPost) result.push_back(who + " 评论了你的动态 " + what + "：" + c->text);
     }
     return result;
 }
 
 void Platform::markMomentsRead(const ServiceBase& me) {
-    int last = 0;
-    for (const Record& r : messages_->records("LK")) {
-        if (r.service == me.type()) last = (std::max)(last, r.seq);
-    }
-    messages_->markRead(me.type(), "O", "-", me.id(), last);
+    feed_.refresh();
+    messages_->markRead(me.type(), "O", "-", me.id(), feed_.lastInteraction(me.type()));
 }
 
 // ======================== 群事件 → 系统提示 ========================

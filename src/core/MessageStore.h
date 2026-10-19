@@ -54,6 +54,10 @@ public:
     // 同上，只要行号大于 afterLine 的：增量应用新记录用（每发一条私信都要先应用新的好友、拉黑记录），
     // 不必每次把全部记录读出来再跳过已经应用过的
     virtual std::vector<Record> recordsAfter(const std::string& kinds, int afterLine) const = 0;
+    // 目前最后一条记录的行号（不分类型）：增量应用时据此前进，下次不必再扫一遍中间那些别的类型的记录
+    virtual int lastRecordLine() const = 0;
+    // 记录被清除过几次（账号注销时，涉及它的记录作废）。用记录增量构建的内存索引据此发现"旧记录少了"，整体重建
+    virtual int recordClears() const = 0;
     // 已读位置：范围 P 私信（对象是对方）、G 群（对象是群号）、O 朋友圈通知
     virtual int readMark(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader) const = 0;
     virtual void markRead(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader,

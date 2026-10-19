@@ -8,6 +8,7 @@
 //   IMChatBench store <目录> text|sqlite [次数]   存储层微基准
 //   IMChatBench save <数据目录> [次数]             加好友后保存数据文件的耗时
 //   IMChatBench social <目录> text|sqlite [记录数]  社交记录很多时发一条私信的耗时
+//   IMChatBench moments <目录> text|sqlite [动态数] 动态很多时看朋友圈、点赞的耗时
 // 客户端用的是项目自己的网络库（EventLoop + TcpClient）：threads 个事件循环线程，每个线程负责一部分连接
 #include "EventLoop.h"   // 网络头文件（winsock2.h）必须在其他 Windows 头文件之前
 #include <algorithm>
@@ -418,12 +419,52 @@ int socialBench(std::string dataDir, const std::string& kind, int records) {
     return 0;
 }
 
+// ======================== moments：动态很多时看朋友圈、点赞 ========================
+
+int momentsBench(std::string dataDir, const std::string& kind, int posts) {
+    if (dataDir.back() != '/' && dataDir.back() != '\\') dataDir += '/';
+    std::error_code ec;
+    std::filesystem::remove_all(Util::pathOf(dataDir), ec);
+    Platform platform(dataDir, kind == "sqlite" ? Platform::Storage::SQLITE : Platform::Storage::TEXT);
+    std::string msg;
+    ServiceBase* a = platform.registerUser("甲", ServiceType::QQ, "a1", Date(2000, 1, 1), "上海", "123456", msg);
+    ServiceBase* b = platform.registerUser("乙", ServiceType::QQ, "b1", Date(2000, 1, 1), "上海", "123456", msg);
+    if (!a || !b || !platform.addFriend(*a, b->id(), "", msg)) {
+        std::cerr << "准备账号失败：" << msg << "\n";
+        return 1;
+    }
+    // 别人（不是甲的好友）发的动态和点赞、评论，每 100 条里有 1 条是乙发的
+    MessageStore& store = platform.messages();
+    for (int i = 0; i < posts; ++i) {
+        const std::string author = i % 100 == 0 ? b->id() : std::to_string(30000 + i % 1000);
+        store.appendRecord('P', ServiceType::QQ, { author, "all" }, true, "动态 " + std::to_string(i));
+        const std::string seq = std::to_string(store.lastSeq());
+        store.appendRecord('L', ServiceType::QQ, { seq, std::to_string(40000 + i % 500), "1" }, false);
+        store.appendRecord('K', ServiceType::QQ, { seq, std::to_string(40000 + i % 500), "-" }, true, "评论");
+    }
+    platform.postMoment(*b, "乙最新的动态", "all", msg);
+    const int latest = store.lastSeq();
+    auto timeIt = [&](const char* name, int times, const std::function<void()>& step) {
+        const auto start = Clock::now();
+        for (int i = 0; i < times; ++i) step();
+        std::printf("  %-24s %10.1f 微秒/次\n", name, std::chrono::duration<double, std::micro>(Clock::now() - start).count() / times);
+    };
+    std::size_t visible = 0;
+    std::printf("%s，%d 条动态（各带一个赞、一条评论）：\n", kind == "sqlite" ? "SQLite" : "文本日志", posts);
+    timeIt("看朋友圈（moments）", 20, [&] { visible = platform.moments(*a).size(); });
+    timeIt("点赞 / 取消（toggleLike）", 20, [&] { platform.toggleLike(*a, latest, msg); });
+    timeIt("提醒（momentNotices）", 20, [&] { platform.momentNotices(*b, true); });
+    std::printf("  甲能看到 %zu 条\n", visible);
+    return 0;
+}
+
 void usage() {
     std::cout << "用法：\n"
                  "  IMChatBench prepare <数据目录> [用户数=200]\n"
                  "  IMChatBench store <目录> text|sqlite [次数=10000]   存储层微基准\n"
                  "  IMChatBench save <数据目录> [次数=100]   加好友后保存数据文件的耗时（数据目录用 prepare 准备）\n"
                  "  IMChatBench social <目录> text|sqlite [记录数=10000]   社交记录很多时发一条私信的耗时（目录会被清空）\n"
+                 "  IMChatBench moments <目录> text|sqlite [动态数=10000]  动态很多时看朋友圈、点赞的耗时（目录会被清空）\n"
                  "  IMChatBench run --data <数据目录> [--host 127.0.0.1] [--port 9000] [--clients 200] [--messages 100]\n"
                  "                  [--threads 4] [--window 1] [--group | --remark]\n";
 }
@@ -451,6 +492,7 @@ int main(int argc, char** argv) {
     }
     try {
         if (args[0] == "prepare" && args.size() >= 2) return prepare(args[1], args.size() >= 3 ? std::stoi(args[2]) : 200);
+        if (args[0] == "moments" && args.size() >= 3) return momentsBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
         if (args[0] == "social" && args.size() >= 3) return socialBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);
         if (args[0] == "save" && args.size() >= 2) return saveBench(args[1], args.size() >= 3 ? std::stoi(args[2]) : 100);
         if (args[0] == "store" && args.size() >= 3) return storeBench(args[1], args[2], args.size() >= 4 ? std::stoi(args[3]) : 10000);

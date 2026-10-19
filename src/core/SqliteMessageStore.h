@@ -53,6 +53,8 @@ public:
                       const std::string& text = "") override;
     std::vector<Record> records(const std::string& kinds) const override;
     std::vector<Record> recordsAfter(const std::string& kinds, int afterLine) const override;
+    int recordClears() const override;
+    int lastRecordLine() const override;
     int readMark(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader) const override;
     void markRead(ServiceType service, const std::string& scope, const std::string& target, const std::string& reader, int seq) override;
     bool setCommitScheduler(Scheduler schedule) override;   // schedule 只能排队，不能立即执行任务
@@ -77,6 +79,7 @@ private:
     mutable std::unordered_map<std::string, sqlite3_stmt*> statements_;
     int lastSeq_ = 0;
     int imported_ = 0;
+    int recordClears_ = 0;     // 账号注销清除记录的次数（数据库只有服务端一个进程在写，记在内存里即可）
     Scheduler scheduler_;      // 批量提交：安排提交任务（为空表示每次写入单独提交）
     bool batchOpen_ = false;   // 本轮的事务已经打开
     bool seqDirty_ = false;    // 有新分配的序号还没写入 meta

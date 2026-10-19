@@ -365,6 +365,18 @@ void SqliteMessageStore::clearAccount(ServiceType service, const std::string& id
         remove.bind(1, line).run();
     }
     endWrite(true, lastSeq_);
+    ++recordClears_;
+}
+
+int SqliteMessageStore::lastRecordLine() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Query query(statement("SELECT COALESCE(MAX(line), 0) FROM records"));   // 主键的最大值：直接取 B 树最右端
+    return query.next() ? static_cast<int>(query.integer(0)) : 0;
+}
+
+int SqliteMessageStore::recordClears() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return recordClears_;
 }
 
 void SqliteMessageStore::clearGroup(ServiceType service, int groupNo) {
