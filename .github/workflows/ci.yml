@@ -92,6 +92,15 @@ jobs:
       - name: Network tests with poll instead of epoll
         run: IMCHAT_POLLER=poll build/bin/IMChatUnitTests --gtest_filter='PollerTest.*:EventLoopTest.*:IoThreads/*:TcpClientTest.*:ChatServerTest.*:ChatClientTest.*'
 
+      # 模糊测试多换几个随机种子；在消毒器任务里同时检查内存错误（ASan/UBSan）和数据竞争（TSan，多 I/O 线程）
+      - name: Fuzz the server with more seeds
+        run: |
+          for seed in $(seq 1 20); do
+            IMCHAT_FUZZ_SEED=$seed build/bin/IMChatUnitTests --gtest_filter='ServerFuzzTest.*' || exit 1
+            IMCHAT_FUZZ_SEED=$seed IMCHAT_TEST_STORAGE=sqlite IMCHAT_TEST_IO_THREADS=2 \
+              build/bin/IMChatUnitTests --gtest_filter='ServerFuzzTest.*' || exit 1
+          done
+
       - name: Benchmark smoke test
         if: matrix.sanitize == ''
         run: |
