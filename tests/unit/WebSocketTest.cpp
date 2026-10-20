@@ -223,9 +223,20 @@ TEST_F(WebSocketServerTest, ServesTheWebClientPage) {
     const std::string response = browser.readAll();
     EXPECT_EQ(response.rfind("HTTP/1.1 200 OK\r\n", 0), 0u) << response.substr(0, 200);
     EXPECT_NE(response.find("text/html; charset=utf-8"), std::string::npos);
-    EXPECT_NE(response.find("new WebSocket("), std::string::npos);   // 确实是网页客户端
+    EXPECT_NE(response.find("js/app.js"), std::string::npos);   // 确实是网页客户端
     const std::size_t body = response.find("\r\n\r\n") + 4;
     EXPECT_NE(response.find("Content-Length: " + std::to_string(response.size() - body) + "\r\n"), std::string::npos);
+
+    // 页面引用的脚本、样式也由服务端提供，类型正确
+    BrowserClient script(port_);
+    script.sendRaw("GET /js/net.js HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    const std::string js = script.readAll();
+    EXPECT_EQ(js.rfind("HTTP/1.1 200 OK\r\n", 0), 0u);
+    EXPECT_NE(js.find("text/javascript"), std::string::npos);
+    EXPECT_NE(js.find("new WebSocket("), std::string::npos);
+    BrowserClient style(port_);
+    style.sendRaw("GET /style.css HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    EXPECT_NE(style.readAll().find("text/css"), std::string::npos);
 }
 
 TEST_F(WebSocketServerTest, UnknownPathGets404AndPlainHttpOnWsGets426) {

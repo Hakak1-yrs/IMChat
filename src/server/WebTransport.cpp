@@ -3,7 +3,7 @@
 #include <any>
 #include "Frame.h"
 #include "Log.h"
-#include "WebPage.h"
+#include "WebFiles.h"
 #include "WebSocket.h"
 
 namespace {
@@ -71,8 +71,9 @@ bool handleHttp(const TcpConnection::Ptr& connection, WireState& state, Buffer& 
         return true;
     }
     input.retrieveAll();   // 每个连接只回答一个请求（Connection: close），后面的数据不再理会
-    if (request.method == "GET" && (request.path == "/" || request.path == "/index.html")) {
-        connection->send(httpResponse("200 OK", "text/html; charset=utf-8", reinterpret_cast<const char*>(kWebPage), kWebPageSize));
+    const WebFile* file = request.method == "GET" ? findWebFile(request.path) : nullptr;
+    if (file) {   // 网页客户端的页面、样式、脚本
+        connection->send(httpResponse("200 OK", file->contentType, reinterpret_cast<const char*>(file->data), file->size));
         connection->shutdownAfterFlush();
         state.kind = WireState::Kind::CLOSING;
     } else if (request.path == "/ws") {

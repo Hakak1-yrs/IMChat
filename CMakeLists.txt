@@ -110,15 +110,15 @@ if(WIN32)
 endif()
 
 # ---- server ----
-# The browser client (web/index.html) is compiled into the server, which serves it on its own port.
-set(WEB_PAGE_SOURCE ${CMAKE_BINARY_DIR}/generated/WebPage.cpp)
-add_custom_command(OUTPUT ${WEB_PAGE_SOURCE}
-    COMMAND ${CMAKE_COMMAND} -DINPUT=${CMAKE_SOURCE_DIR}/web/index.html -DOUTPUT=${WEB_PAGE_SOURCE} -DNAME=kWebPage
-            -P ${CMAKE_SOURCE_DIR}/cmake/EmbedFile.cmake
-    DEPENDS ${CMAKE_SOURCE_DIR}/web/index.html ${CMAKE_SOURCE_DIR}/cmake/EmbedFile.cmake
-    COMMENT "Embedding web/index.html")
+# The browser client (everything under web/) is compiled into the server, which serves it on its own port.
+file(GLOB_RECURSE WEB_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/web/*)
+set(WEB_FILES_SOURCE ${CMAKE_BINARY_DIR}/generated/WebFiles.cpp)
+add_custom_command(OUTPUT ${WEB_FILES_SOURCE}
+    COMMAND ${CMAKE_COMMAND} -DROOT=${CMAKE_SOURCE_DIR}/web -DOUTPUT=${WEB_FILES_SOURCE} -P ${CMAKE_SOURCE_DIR}/cmake/EmbedWebFiles.cmake
+    DEPENDS ${WEB_FILES} ${CMAKE_SOURCE_DIR}/cmake/EmbedWebFiles.cmake
+    COMMENT "Embedding the web client")
 add_library(imchat_server STATIC src/server/ChatServer.cpp src/server/ChatServer.h src/server/LoginToken.cpp src/server/LoginToken.h
-            src/server/WebTransport.cpp src/server/WebTransport.h src/server/WebPage.h ${WEB_PAGE_SOURCE})
+            src/server/WebTransport.cpp src/server/WebTransport.h src/server/WebFiles.h ${WEB_FILES_SOURCE})
 target_include_directories(imchat_server PUBLIC src/server)
 target_link_libraries(imchat_server PUBLIC imchat_reactor imchat_protocol imchat_core)
 add_executable(IMChatServer src/server/main.cpp)
