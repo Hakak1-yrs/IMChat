@@ -5,9 +5,11 @@
 #include <optional>
 #include <set>
 #include <vector>
+#include "Date.h"
 #include "Group.h"
 #include "GroupPolicy.h"
 #include "GroupService.h"
+#include "IndependentIdService.h"
 #include "Log.h"
 #include "Password.h"
 #include "Platform.h"
@@ -143,6 +145,8 @@ void ChatServer::onClose(const TcpConnection::Ptr& connection) {
 void ChatServer::removeSession(const TcpConnection::Ptr& connection) {
     auto it = sessions_.find(connection->id());
     if (it == sessions_.end()) return;
+    const std::set<int> rooms = it->second.rooms;   // 掉线也算离开群聊室，室内的人看得到
+    for (int groupNo : rooms) leaveRoom(it->second, groupNo);
     const Session& session = it->second;
     const std::string accountKey = session.loggedIn ? session.accountKey : "";
     bool wentOffline = false;
@@ -213,6 +217,11 @@ void ChatServer::dispatch(Session& session, const Packet& packet) {
     case MessageType::READ_REQ:
     case MessageType::CALL_REQ:
         if (!session.loggedIn) {
+            // 注册新用户之类的操作本来就在登录之前
+            if (packet.type == MessageType::CALL_REQ && publicApi_.count(field(packet.body, "op"))) {
+                handleCall(session, packet.body);
+                return;
+            }
             sendError(session.connection, packet.body, ErrorCode::NOT_LOGGED_IN, "请先登录");
             return;
         }
@@ -596,6 +605,381 @@ void ChatServer::registerApi() {
         notifyMomentAudience(me, me.id());   // 评论可能在别人的动态下：通知我的好友（含动态作者）
         return json{ { "message", msg } };
     };
+
+    // 个人中心（单机版“用户菜单 → 个人信息”的各项操作）
+    publicApi_["account.register"] = [this](Session& session, const json& args) { return registerUser(session, args); };
+    api_["account.get"] = [this](Session&, ServiceBase& me, const json&) { return accountGet(me); };
+    api_["account.update"] = [this](Session&, ServiceBase& me, const json& args) { return accountUpdate(me, args); };
+    api_["account.password"] = [this](Session&, ServiceBase& me, const json& args) { return changePassword(me, args); };
+    api_["account.openService"] = [this](Session&, ServiceBase& me, const json& args) { return openService(me, args); };
+    api_["account.bindQQ"] = [this](Session&, ServiceBase& me, const json& args) { return bindQQ(me, args); };
+    api_["account.closeService"] = [this](Session& session, ServiceBase& me, const json& args) { return closeService(session, me, args); };
+    api_["account.deregister"] = [this](Session& session, ServiceBase& me, const json& args) { return deregister(session, me, args); };
+    api_["platform.overview"] = [this](Session&, ServiceBase&, const json&) { return overview(); };
+    api_["friends.cross"] = [this](Session&, ServiceBase& me, const json& args) { return crossFriends(me, args); };
+    // 点对点聊天：服务端只转发双方交换连接信息的信令，聊天内容不经过服务端
+    api_["p2p.signal"] = [this](Session& session, ServiceBase& me, const json& args) { return p2pSignal(session, me, args); };
+    // 实时群聊室：在线的群成员进来即时聊天，内容不保存（与单机版的群聊室相同），由服务端主持
+    api_["room.join"] = [this](Session& session, ServiceBase& me, const json& args) { return roomJoin(session, me, args); };
+    api_["room.say"] = [this](Session& session, ServiceBase& me, const json& args) { return roomSay(session, me, args); };
+    api_["room.leave"] = [this](Session& session, ServiceBase& me, const json& args) { return roomLeave(session, me, args); };
+}
+
+// ---- 个人中心 ----
+
+namespace {
+
+// 与单机版的输入检查相同：昵称、所在地不能为空（空格换成下划线），出生日期合法且不晚于今天，密码至少 6 位
+void readProfile(const json& args, std::string& nickname, Date& birthday, std::string& location, std::string& password) {
+    nickname = Util::toField(Util::lineText(field(args, "nickname")));
+    location = Util::toField(Util::lineText(field(args, "location")));
+    password = Util::toField(field(args, "password"));
+    if (nickname.empty() || location.empty()) throw std::invalid_argument("昵称和所在地不能为空。");
+    if (!Date::parse(field(args, "birthday"), birthday) || birthday.toString() > Date::today().toString())
+        throw std::invalid_argument("出生日期不正确（格式为 yyyy-mm-dd，且不能晚于今天）。");
+    if (password.size() < 6) throw std::invalid_argument("密码太短，请至少输入 6 位。");
+}
+
+}  // namespace
+
+json ChatServer::registerUser(Session& session, const json& args) {
+    if (!takeToken(session)) throw ApiError("操作太频繁，请稍后再试");   // 不登录就能调用：限制速率，防止被用来批量注册
+    const std::string name = Util::toField(Util::lineText(field(args, "name")));
+    ServiceType type = ServiceType::QQ;
+    if (name.empty()) throw ApiError("真实姓名不能为空。");
+    if (!ServiceTypeHelper::parse(field(args, "service"), type)) throw ApiError("未知的服务：" + field(args, "service"));
+    std::string msg, nickname, location, password;
+    Date birthday;
+    if (!platform_.canRegisterWith(type, msg)) throw ApiError(msg);   // 例如微博与 QQ 共享号码，不能作为第一个服务
+    try {
+        readProfile(args, nickname, birthday, location, password);
+    } catch (const std::invalid_argument& e) {
+        throw ApiError(e.what());
+    }
+    ServiceBase* account = platform_.registerUser(name, type, nickname, birthday, location, password, msg);
+    if (!account) throw ApiError(msg);
+    persist();
+    Log::info("新用户注册：" + ServiceTypeHelper::code(type) + " " + account->id());
+    return json{ { "service", ServiceTypeHelper::code(type) }, { "account", account->id() }, { "message", msg } };
+}
+
+json ChatServer::accountGet(ServiceBase& me) {
+    User* owner = platform_.ownerOf(&me);
+    if (!owner) throw ApiError("账号不存在");
+    json services = json::array(), available = json::array();
+    for (const ServiceBase* s : owner->services()) {
+        services.push_back({ { "service", ServiceTypeHelper::code(s->type()) }, { "account", s->id() }, { "nickname", s->nickname() } });
+    }
+    for (ServiceType t : ServiceTypeHelper::all()) {
+        if (!owner->hasService(t)) available.push_back(ServiceTypeHelper::code(t));
+    }
+    const auto* independent = dynamic_cast<const IndependentIdService*>(&me);
+    return json{ { "userId", owner->id() },
+                 { "name", owner->name() },
+                 { "service", ServiceTypeHelper::code(me.type()) },
+                 { "serviceName", me.serviceName() },
+                 { "id", me.id() },
+                 { "idLabel", me.idLabel() },
+                 { "nickname", me.nickname() },
+                 { "location", me.location() },
+                 { "birthday", me.birthday().toString() },
+                 { "registerDate", me.registerDate().toString() },
+                 { "tAge", me.tAge() },
+                 { "info", Util::captureLines([&] { me.showInfo(); }) },   // 各服务按自己的类型输出资料（多态）
+                 { "independent", independent != nullptr },   // 独立号码（微信、微商）：可以绑定 QQ
+                 { "boundQQ", independent ? independent->boundQQ() : "" },
+                 { "hasQQ", owner->hasService(ServiceType::QQ) },
+                 { "services", std::move(services) },
+                 { "available", std::move(available) } };
+}
+
+json ChatServer::accountUpdate(ServiceBase& me, const json& args) {
+    // 只改传了的字段
+    std::string changed;
+    if (args.contains("nickname")) {
+        const std::string nickname = Util::toField(Util::lineText(field(args, "nickname")));
+        if (nickname.empty()) throw ApiError("昵称不能为空。");
+        me.setNickname(nickname);
+        changed = "昵称";
+    }
+    if (args.contains("location")) {
+        const std::string location = Util::toField(Util::lineText(field(args, "location")));
+        if (location.empty()) throw ApiError("所在地不能为空。");
+        me.setLocation(location);
+        changed += changed.empty() ? "所在地" : "、所在地";
+    }
+    if (args.contains("birthday")) {
+        Date birthday;
+        if (!Date::parse(field(args, "birthday"), birthday) || birthday.toString() > Date::today().toString())
+            throw ApiError("日期不正确（格式为 yyyy-mm-dd，且不能晚于今天）。");
+        me.setBirthday(birthday);
+        changed += changed.empty() ? "出生日期" : "、出生日期";
+    }
+    if (changed.empty()) throw ApiError("没有要修改的内容");
+    persist();
+    for (const Friend& f : me.friends().all()) notifyChanged(me.type(), f.id(), { "contacts" });   // 好友那边的昵称、所在地跟着变
+    return json{ { "message", changed + "已修改" } };
+}
+
+json ChatServer::changePassword(ServiceBase& me, const json& args) {
+    if (!me.checkPassword(Util::toField(field(args, "old")))) throw ApiError("原密码错误。");
+    const std::string next = Util::toField(field(args, "new"));
+    if (next.size() < 6) throw ApiError("密码太短，请至少输入 6 位。");
+    me.setPassword(next);   // 各服务账号的密码相互独立；只保存加密后的记录
+    persist();
+    return json{ { "message", "密码已修改" } };
+}
+
+json ChatServer::openService(ServiceBase& me, const json& args) {
+    User* owner = platform_.ownerOf(&me);
+    ServiceType type = ServiceType::QQ;
+    if (!owner) throw ApiError("账号不存在");
+    if (!ServiceTypeHelper::parse(field(args, "service"), type)) throw ApiError("未知的服务：" + field(args, "service"));
+    std::string msg, nickname, location, password;
+    Date birthday;
+    try {
+        readProfile(args, nickname, birthday, location, password);
+    } catch (const std::invalid_argument& e) {
+        throw ApiError(e.what());
+    }
+    ServiceBase* account = platform_.openService(*owner, type, nickname, birthday, location, password, msg);
+    if (!account) throw ApiError(msg);
+    // 微信、微商等独立号码的服务：绑定本人的 QQ 号后才能与 QQ、微博互认好友
+    auto* independent = dynamic_cast<IndependentIdService*>(account);
+    if (independent && owner->hasService(ServiceType::QQ) && args.value("bindQQ", true)) {
+        std::string bindMsg;
+        platform_.bindQQ(*owner, *independent, bindMsg);
+        msg += "\n" + bindMsg;
+    }
+    persist();
+    return json{ { "service", ServiceTypeHelper::code(type) }, { "account", account->id() }, { "message", msg } };
+}
+
+json ChatServer::bindQQ(ServiceBase& me, const json& args) {
+    auto* account = dynamic_cast<IndependentIdService*>(&me);
+    if (!account) throw ApiError(me.serviceName() + "与 QQ 共享号码，本来就对应你的 QQ 号，不需要绑定。");
+    User* owner = platform_.ownerOf(&me);
+    std::string msg;
+    const bool ok = args.value("on", true) ? owner && platform_.bindQQ(*owner, *account, msg) : platform_.unbindQQ(*account, msg);
+    if (!ok) throw ApiError(msg.empty() ? "操作失败" : msg);
+    persist();
+    return json{ { "message", msg }, { "boundQQ", account->boundQQ() } };
+}
+
+void ChatServer::beforeAccountRemoved(const ServiceBase& account, const std::string& reason, std::uint64_t except) {
+    // 好友和群成员的列表里将少一个人：通知他们重新获取
+    for (const Friend& f : account.friends().all()) notifyChanged(account.type(), f.id(), { "contacts", "social" });
+    for (const Group* g : platform_.groups().groupsOf(account.type(), account.id())) {
+        for (const std::string& id : g->members()) {
+            if (id != account.id()) notifyChanged(account.type(), id, { "groups" });
+        }
+    }
+    const std::string key = ServiceTypeHelper::code(account.type()) + " " + account.id();
+    auto online = online_.find(key);
+    if (online == online_.end()) return;
+    auto session = sessions_.find(online->second);
+    online_.erase(online);
+    if (session == sessions_.end() || session->first == except) return;
+    const std::set<int> rooms = session->second.rooms;
+    for (int groupNo : rooms) leaveRoom(session->second, groupNo);
+    session->second.loggedIn = false;
+    TcpConnection::Ptr connection = session->second.connection;
+    send(connection, MessageType::KICKED, json{ { "reason", reason } });
+    post(connection, [connection] { connection->shutdownAfterFlush(); });
+}
+
+json ChatServer::closeService(Session& session, ServiceBase& me, const json& args) {
+    User* owner = platform_.ownerOf(&me);
+    if (!owner) throw ApiError("账号不存在");
+    if (!me.checkPassword(Util::toField(field(args, "password")))) throw ApiError("密码错误。");
+    if (owner->services().size() == 1) throw ApiError("这是你唯一开通的服务，关闭后将无法登录。如需离开平台，请选择“注销整个账号”。");
+    const std::set<int> rooms = session.rooms;
+    for (int groupNo : rooms) leaveRoom(session, groupNo);
+    beforeAccountRemoved(me, "", session.connection->id());
+    const std::string closed = me.serviceName();
+    std::string msg;
+    if (!platform_.closeService(*owner, me.type(), msg)) throw ApiError(msg);   // 之后 me 已被删除，不能再访问
+    persist();
+    // 这条连接回到未登录状态：客户端凭令牌改登录本人的其他服务
+    session.loggedIn = false;
+    session.accountKey.clear();
+    json services = json::array();
+    for (const ServiceBase* s : owner->services())
+        services.push_back({ { "service", ServiceTypeHelper::code(s->type()) }, { "account", s->id() }, { "nickname", s->nickname() } });
+    Log::info("用户 " + std::to_string(owner->id()) + " 关闭了" + closed);
+    return json{ { "message", msg }, { "services", std::move(services) } };
+}
+
+json ChatServer::deregister(Session& session, ServiceBase& me, const json& args) {
+    User* owner = platform_.ownerOf(&me);
+    if (!owner) throw ApiError("账号不存在");
+    if (!me.checkPassword(Util::toField(field(args, "password")))) throw ApiError("密码错误。");
+    const std::set<int> rooms = session.rooms;
+    for (int groupNo : rooms) leaveRoom(session, groupNo);
+    for (const ServiceBase* account : owner->services()) beforeAccountRemoved(*account, "账号已注销", session.connection->id());
+    const int userId = owner->id();
+    std::string msg;
+    platform_.deleteUser(userId, msg);   // 之后 me、owner 都已被删除
+    persist();
+    session.loggedIn = false;
+    session.accountKey.clear();
+    Log::info("用户 " + std::to_string(userId) + " 注销了账号");
+    return json{ { "message", msg } };
+}
+
+json ChatServer::overview() {
+    // 平台概况（单机版主菜单的同名功能）：所有用户及其开通的服务、各服务的群数量
+    json users = json::array();
+    for (const auto& [id, user] : platform_.users()) {
+        json services = json::array();
+        for (const ServiceBase* s : user.services())
+            services.push_back({ { "service", ServiceTypeHelper::code(s->type()) }, { "account", s->id() }, { "nickname", s->nickname() } });
+        users.push_back({ { "id", id }, { "name", user.name() }, { "services", std::move(services) } });
+    }
+    json groups = json::object();
+    for (ServiceType t : ServiceTypeHelper::all())
+        groups[ServiceTypeHelper::code(t)] = platform_.groups().groupsOfService(t).size();
+    return json{ { "users", std::move(users) }, { "groups", std::move(groups) } };
+}
+
+json ChatServer::crossFriends(ServiceBase& me, const json& args) {
+    // 跨服务好友（单机版“好友管理 → 推荐好友 / 共同好友”）：依据本人在另一个服务中的好友
+    User* owner = platform_.ownerOf(&me);
+    if (!owner) throw ApiError("账号不存在");
+    json sources = json::array();
+    for (const ServiceBase* s : owner->services()) {
+        if (s != &me) sources.push_back(ServiceTypeHelper::code(s->type()));
+    }
+    ServiceType source = ServiceType::QQ;
+    if (!ServiceTypeHelper::parse(field(args, "source"), source) || source == me.type() || !owner->hasService(source))
+        return json{ { "sources", std::move(sources) } };   // 只列出可以选的服务
+    json result = { { "sources", sources }, { "source", ServiceTypeHelper::code(source) } };
+
+    std::vector<ServiceBase*> recommended;
+    std::vector<std::string> skipped;
+    std::string reason;
+    json recommend = json::array();
+    if (!platform_.recommendFriends(*owner, me.type(), source, recommended, skipped, reason)) {
+        result["recommendError"] = reason;
+    } else {
+        for (ServiceBase* account : recommended) {
+            const ServiceBase* there = platform_.ownerOf(account)->service(source);
+            recommend.push_back({ { "id", account->id() }, { "nickname", account->nickname() },
+                                  { "sourceId", there ? there->id() : "" }, { "sourceNickname", there ? there->nickname() : "" } });
+        }
+        result["recommendSkipped"] = skipped;
+    }
+    result["recommend"] = std::move(recommend);
+
+    std::vector<User*> common;
+    skipped.clear();
+    json commonList = json::array();
+    if (!platform_.commonFriends(*owner, me.type(), source, common, skipped, reason)) {
+        result["commonError"] = reason;
+    } else {
+        for (User* u : common) {
+            const ServiceBase* here = u->service(me.type());
+            const ServiceBase* there = u->service(source);
+            commonList.push_back({ { "name", u->name() }, { "id", here ? here->id() : "" }, { "nickname", here ? here->nickname() : "" },
+                                   { "sourceId", there ? there->id() : "" }, { "sourceNickname", there ? there->nickname() : "" } });
+        }
+        result["commonSkipped"] = skipped;
+    }
+    result["common"] = std::move(commonList);
+    return result;
+}
+
+// ---- 点对点聊天的信令、实时群聊室 ----
+
+json ChatServer::p2pSignal(Session& session, ServiceBase& me, const json& args) {
+    // 点对点聊天的消息由双方直接传送，服务端只帮它们找到对方：转发邀请、应答、连接地址这类信令。
+    // 直连不通时客户端也用它中转聊天内容（不保存）。只能发给好友，内容原样转发
+    const std::string to = field(args, "to");
+    const auto data = args.find("data");
+    if (data == args.end() || !data->is_object()) throw ApiError("缺少 data");
+    if (!me.friends().contains(to)) throw ApiError(to + " 不是你的好友");
+    if (data->dump().size() > 16 * 1024) throw ApiError("信令太长");
+    if (!takeToken(session)) throw ApiError("发送太频繁，请稍后再试");
+    const std::string key = ServiceTypeHelper::code(me.type()) + " " + to;
+    if (!isOnline(key)) throw ApiError("对方不在线");
+    pushTo(key, MessageType::P2P_SIGNAL, json{ { "from", me.id() }, { "nickname", me.nickname() }, { "data", *data } });
+    return json::object();
+}
+
+json ChatServer::roomJoin(Session& session, ServiceBase& me, const json& args) {
+    const int groupNo = static_cast<int>(number(args, "groupNo", 0));
+    const Group* g = platform_.groups().find(me.type(), groupNo);
+    if (!g) throw ApiError("群 " + std::to_string(groupNo) + " 不存在");
+    if (!g->isMember(me.id())) throw ApiError("只有群成员可以进入群聊室");
+    const std::string roomKey = ServiceTypeHelper::code(me.type()) + " " + std::to_string(groupNo);
+    auto& room = rooms_[roomKey];
+    const bool already = room.count(me.id()) > 0;
+    room[me.id()] = session.connection->id();
+    session.rooms.insert(groupNo);
+    if (!already) {
+        pushRoom(roomKey, json{ { "groupNo", groupNo }, { "event", "join" }, { "from", me.id() }, { "nickname", me.nickname() },
+                                { "time", Date::nowText() } },
+                 me.id());
+    }
+    json members = json::array();
+    for (const auto& member : room) {
+        ServiceBase* account = platform_.findAccount(me.type(), member.first);
+        members.push_back({ { "id", member.first }, { "nickname", account ? account->nickname() : member.first } });
+    }
+    return json{ { "groupNo", groupNo }, { "name", g->name() }, { "members", std::move(members) } };
+}
+
+json ChatServer::roomSay(Session& session, ServiceBase& me, const json& args) {
+    const int groupNo = static_cast<int>(number(args, "groupNo", 0));
+    if (!session.rooms.count(groupNo)) throw ApiError("你不在这个群聊室里");
+    const std::string text = Util::lineText(field(args, "text"));
+    if (text.empty()) throw ApiError("消息不能为空");
+    if (Util::charCount(text) > 1000) throw ApiError("消息太长（最多 1000 字）");
+    if (!takeToken(session)) throw ApiError("发送太频繁，请稍后再试");
+    const std::string time = Date::nowText();
+    pushRoom(ServiceTypeHelper::code(me.type()) + " " + std::to_string(groupNo),
+             json{ { "groupNo", groupNo }, { "event", "say" }, { "from", me.id() }, { "nickname", me.nickname() }, { "text", text },
+                   { "time", time } },
+             me.id());
+    return json{ { "time", time } };
+}
+
+json ChatServer::roomLeave(Session& session, ServiceBase&, const json& args) {
+    leaveRoom(session, static_cast<int>(number(args, "groupNo", 0)));
+    return json::object();
+}
+
+void ChatServer::leaveRoom(Session& session, int groupNo) {
+    session.rooms.erase(groupNo);
+    const std::size_t space = session.accountKey.find(' ');
+    if (space == std::string::npos) return;
+    const std::string id = session.accountKey.substr(space + 1);
+    const std::string roomKey = session.accountKey.substr(0, space) + " " + std::to_string(groupNo);
+    auto room = rooms_.find(roomKey);
+    if (room == rooms_.end()) return;
+    auto member = room->second.find(id);
+    if (member == room->second.end() || member->second != session.connection->id()) return;   // 已在别处重新进入
+    room->second.erase(member);
+    if (room->second.empty()) {
+        rooms_.erase(room);
+        return;
+    }
+    ServiceType type = ServiceType::QQ;
+    ServiceTypeHelper::parse(session.accountKey.substr(0, space), type);
+    const ServiceBase* account = platform_.findAccount(type, id);
+    pushRoom(roomKey, json{ { "groupNo", groupNo }, { "event", "leave" }, { "from", id }, { "nickname", account ? account->nickname() : id },
+                            { "time", Date::nowText() } },
+             id);
+}
+
+void ChatServer::pushRoom(const std::string& roomKey, const json& event, const std::string& except) {
+    auto room = rooms_.find(roomKey);
+    if (room == rooms_.end()) return;
+    for (const auto& [id, connectionId] : room->second) {
+        if (id == except) continue;
+        auto receiver = sessions_.find(connectionId);
+        if (receiver != sessions_.end()) send(receiver->second.connection, MessageType::ROOM_EVENT, event);
+    }
 }
 
 // ---- 朋友圈 ----
@@ -839,14 +1223,17 @@ void ChatServer::handleCall(Session& session, const json& request) {
     json response = reply(request);
     const std::string op = field(request, "op");
     auto handler = api_.find(op);
+    auto publicHandler = publicApi_.find(op);
     ServiceBase* me = accountOf(session);
-    if (handler == api_.end() || !me) {
+    if (publicHandler == publicApi_.end() && (handler == api_.end() || !me)) {
         response["ok"] = false;
         response["error"] = "不支持的操作：" + op;
     } else {
         try {
-            const auto args = request.find("args");
-            response["data"] = handler->second(session, *me, args != request.end() && args->is_object() ? *args : json::object());
+            const auto found = request.find("args");
+            const json& args = found != request.end() && found->is_object() ? *found : json::object();
+            response["data"] = publicHandler != publicApi_.end() ? publicHandler->second(session, args)
+                                                                 : handler->second(session, *me, args);
             response["ok"] = true;
         } catch (const ApiError& e) {
             response["ok"] = false;

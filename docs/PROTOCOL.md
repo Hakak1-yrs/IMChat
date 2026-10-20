@@ -73,6 +73,8 @@ WebSocket 层的规则（`src/protocol/WebSocket.*`、`src/server/WebTransport.*
 | `PRESENCE` | 510 | S → C | `{account, online}`：好友上线 / 下线 |
 | `MSG_REVOKED` | 511 | S → C | `{seq, revokedBy}`：会话里的一条消息被撤回 |
 | `DATA_CHANGED` | 512 | S → C | `{topics: ["contacts", "social", "groups", "moments"]}`：别人的操作影响了我（如通过了我的好友申请、把我拉进群），重新获取对应数据 |
+| `P2P_SIGNAL` | 513 | S → C | `{from, nickname, data}`：好友通过 `p2p.signal` 发来的点对点聊天信令，`data` 原样转发（见下面的“点对点聊天”） |
+| `ROOM_EVENT` | 514 | S → C | `{groupNo, event: "join"\|"leave"\|"say", from, nickname, text?, time}`：实时群聊室里有人进出、发言 |
 | `ERROR_RESP` | 900 | S → C | `{reqId?, code, message}` |
 
 `LOGIN_RESP` 成功时还带有 `location`（所在地）、`momentsName`（QQ空间 / 朋友圈……），以及：
@@ -121,6 +123,21 @@ WebSocket 层的规则（`src/protocol/WebSocket.*`、`src/server/WebTransport.*
 | `moments.comment` | `{seq, replyTo?, text}` | `{message}` |
 | `moments.delete` | `{seq}` | `{message}` |
 | `moments.deleteComment` | `{seq}` | `{message}` |
+
+| `account.register` | `{name, service, nickname, birthday, location, password}` | `{service, account, message}`：注册新用户并开通第一个服务。**不需要登录**（唯一的例外），按连接限速 |
+| `account.get` | — | `{userId, name, service, serviceName, id, idLabel, nickname, location, birthday, registerDate, tAge, info, independent, boundQQ, hasQQ, services, available}`：个人中心。`independent` 表示独立号码（微信、微商）可以绑定 QQ；`available` 是还没开通的服务 |
+| `account.update` | `{nickname?, location?, birthday?}` | `{message}`：只改传了的字段；好友收到 `DATA_CHANGED contacts` |
+| `account.password` | `{old, new}` | `{message}`：各服务的密码相互独立 |
+| `account.openService` | `{service, nickname, birthday, location, password, bindQQ?}` | `{service, account, message}`：为本人开通新服务，账号按服务规则分配；微信、微商默认绑定本人的 QQ。之后凭令牌登录它 |
+| `account.bindQQ` | `{on}` | `{message, boundQQ}`：当前的独立号码服务绑定 / 解绑本人的 QQ 号 |
+| `account.closeService` | `{password}` | `{message, services}`：关闭当前服务（唯一的服务不能关）。好友和群成员收到 `DATA_CHANGED`；这条连接回到未登录状态，客户端凭令牌改登录 `services` 中的其他服务 |
+| `account.deregister` | `{password}` | `{message}`：注销整个用户。本人其他服务的在线连接收到 `KICKED {reason: "账号已注销"}` |
+| `platform.overview` | — | `{users: [{id, name, services}], groups: {服务: 群数量}}`：平台概况 |
+| `friends.cross` | `{source?}` | `{sources, source, recommend: [{id, nickname, sourceId, sourceNickname}], common: [{name, id, nickname, sourceId, sourceNickname}], recommendError?, commonError?, recommendSkipped, commonSkipped}`：跨服务好友。不带 `source` 时只返回可以选的服务 |
+| `p2p.signal` | `{to, data}` | `{}`：把 `data`（对象，最长 16 KiB）转发给在线的好友（`P2P_SIGNAL`），按连接限速 |
+| `room.join` | `{groupNo}` | `{groupNo, name, members}`：进入实时群聊室（只有群成员能进），室内其他人收到 `ROOM_EVENT join` |
+| `room.say` | `{groupNo, text}` | `{time}`：室内其他人收到 `ROOM_EVENT say`。内容不保存 |
+| `room.leave` | `{groupNo}` | `{}`：断线也算离开 |
 
 朋友圈的规则都由服务端按查看者处理：只能看到互为好友的人的动态；可见范围不允许的不下发；点赞和评论只下发共同好友的（作者本人能看到全部）；别人动态的 `scope` 为空，不泄露"不给谁看"的名单。发表、点赞、评论、删除后，动态作者和作者的好友收到 `DATA_CHANGED {topics: ["moments"]}`。
 

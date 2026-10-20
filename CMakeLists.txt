@@ -160,12 +160,12 @@ if(IMCHAT_BUILD_UNIT_TESTS)
     gtest_discover_tests(IMChatUnitTests WORKING_DIRECTORY ${CMAKE_BINARY_DIR} DISCOVERY_MODE PRE_TEST)
     # The same server and client integration tests again, with the server running 3 I/O threads.
     add_test(NAME IMChatUnitTests.MultiThreadedServer
-             COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*:WebSocketServerTest.*
+             COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*:WebSocketServerTest.*:ServerFeaturesTest.*
              WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
     set_tests_properties(IMChatUnitTests.MultiThreadedServer PROPERTIES ENVIRONMENT IMCHAT_TEST_IO_THREADS=3)
     # ...and once more with messages stored in SQLite instead of the text log.
     add_test(NAME IMChatUnitTests.SqliteStorage
-             COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*:WebSocketServerTest.*
+             COMMAND IMChatUnitTests --gtest_filter=ChatServerTest.*:ChatClientTest.*:WebSocketServerTest.*:ServerFeaturesTest.*
              WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
     set_tests_properties(IMChatUnitTests.SqliteStorage PROPERTIES ENVIRONMENT IMCHAT_TEST_STORAGE=sqlite)
 endif()

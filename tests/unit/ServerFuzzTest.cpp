@@ -35,8 +35,12 @@ public:
                                          "friends.request", "friends.respond", "friends.remove", "friends.remark", "friends.block",
                                          "settings.verify", "groups.all", "group.get", "group.create", "group.exec", "server.stats",
                                          "moments.list", "moments.notices", "moments.markRead", "moments.post", "moments.like",
-                                         "moments.comment", "moments.delete", "moments.deleteComment" };
-            packet.body["op"] = chance(10) ? value(1) : json(ops[pick(0, 24)]);
+                                         "moments.comment", "moments.delete", "moments.deleteComment", "account.register",
+                                         "account.get", "account.update", "account.password", "account.openService",
+                                         "account.bindQQ", "account.closeService", "account.deregister", "platform.overview",
+                                         "friends.cross", "p2p.signal", "room.join", "room.say", "room.leave" };
+            constexpr int kOps = static_cast<int>(sizeof(ops) / sizeof(ops[0]));
+            packet.body["op"] = chance(10) ? value(1) : json(ops[pick(0, kOps - 1)]);
             packet.body["args"] = chance(10) ? value(2) : object(2);
         }
         return packet;
@@ -84,9 +88,11 @@ private:
     json object(int depth) {
         static const char* keys[] = { "reqId", "service", "account", "password", "token", "clientMsgId", "to", "groupNo", "text",
                                       "afterSeq", "limit", "peer", "seq", "op", "args", "id", "remark", "on", "target",
-                                      "greeting", "accept", "kind", "members", "name", "scope", "replyTo", "author" };
+                                      "greeting", "accept", "kind", "members", "name", "scope", "replyTo", "author",
+                                      "nickname", "location", "birthday", "old", "new", "source", "data" };
+        constexpr int kKeys = static_cast<int>(sizeof(keys) / sizeof(keys[0]));
         json o = json::object();
-        for (int i = pick(0, 6); i > 0; --i) o[keys[pick(0, 26)]] = value(depth);
+        for (int i = pick(0, 6); i > 0; --i) o[keys[pick(0, kKeys - 1)]] = value(depth);
         return o;
     }
 

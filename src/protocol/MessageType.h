@@ -22,6 +22,8 @@ enum class MessageType : std::uint16_t {
     PRESENCE = 510,       // 推送：好友上线 / 下线 {account, online}
     MSG_REVOKED = 511,    // 推送：一条消息被撤回 {seq, revokedBy}
     DATA_CHANGED = 512,   // 推送：与我有关的数据变了，需要重新获取 {topics: ["contacts", "social"]}
+    P2P_SIGNAL = 513,     // 推送：好友发来的点对点聊天信令（邀请、连接地址……），服务端只转发 {from, nickname, data}
+    ROOM_EVENT = 514,     // 推送：实时群聊室里有人进出、发言 {groupNo, event, from, nickname, text?, time}
     ERROR_RESP = 900,     // {reqId?, code, message}
 };
 

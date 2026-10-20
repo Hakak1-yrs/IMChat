@@ -20,6 +20,8 @@ const char* messageTypeName(MessageType type) {
     case MessageType::PRESENCE: return "PRESENCE";
     case MessageType::MSG_REVOKED: return "MSG_REVOKED";
     case MessageType::DATA_CHANGED: return "DATA_CHANGED";
+    case MessageType::P2P_SIGNAL: return "P2P_SIGNAL";
+    case MessageType::ROOM_EVENT: return "ROOM_EVENT";
     case MessageType::ERROR_RESP: return "ERROR_RESP";
     }
     return "UNKNOWN";

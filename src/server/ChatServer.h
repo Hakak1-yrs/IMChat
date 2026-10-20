@@ -4,6 +4,7 @@
 #include <deque>
 #include <functional>
 #include <initializer_list>
+#include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -70,6 +71,7 @@ private:
         std::string accountKey;   // "QQ 10001"
         double tokens = 0;        // 令牌桶里剩下的令牌
         std::chrono::steady_clock::time_point bucketTime{};   // 上次补充令牌的时间（初始值表示还没用过）
+        std::set<int> rooms;      // 加入的实时群聊室（群号，本服务内）
     };
     // 运行统计（server.stats 查询，每分钟打印一行概况）
     struct Stats {
@@ -103,10 +105,32 @@ private:
     // 通用请求（CALL_REQ）的处理函数：返回 data；业务上的失败抛出 ApiError，回给客户端 ok:false 和原因。
     // 新增一种操作只需要在 registerApi 里登记一项，不必新增消息类型
     using ApiHandler = std::function<nlohmann::json(Session& session, ServiceBase& me, const nlohmann::json& args)>;
+    // 不需要登录就能调用的操作（注册新用户）
+    using PublicHandler = std::function<nlohmann::json(Session& session, const nlohmann::json& args)>;
     struct ApiError : std::runtime_error {
         using std::runtime_error::runtime_error;
     };
     void registerApi();
+    // ---- 账号（个人中心）：注册、资料、密码、开通与关闭服务、绑定 QQ、注销 ----
+    nlohmann::json registerUser(Session& session, const nlohmann::json& args);
+    nlohmann::json accountGet(ServiceBase& me);
+    nlohmann::json accountUpdate(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json changePassword(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json openService(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json bindQQ(ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json closeService(Session& session, ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json deregister(Session& session, ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json overview();
+    nlohmann::json crossFriends(ServiceBase& me, const nlohmann::json& args);
+    // 账号即将被删除：通知它的好友和所在群的成员重新获取数据，并让它的在线连接下线（except 除外，由调用者自己处理）
+    void beforeAccountRemoved(const ServiceBase& account, const std::string& reason, std::uint64_t except);
+    // ---- 点对点聊天的信令转发、实时群聊室 ----
+    nlohmann::json p2pSignal(Session& session, ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json roomJoin(Session& session, ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json roomSay(Session& session, ServiceBase& me, const nlohmann::json& args);
+    nlohmann::json roomLeave(Session& session, ServiceBase& me, const nlohmann::json& args);
+    void leaveRoom(Session& session, int groupNo);   // 离开群聊室，通知室内的其他人
+    void pushRoom(const std::string& roomKey, const nlohmann::json& event, const std::string& except);
     nlohmann::json contactsList(ServiceBase& me);
     nlohmann::json groupsList(ServiceBase& me);
     nlohmann::json readsGet(ServiceBase& me);
@@ -194,6 +218,9 @@ private:
     std::unordered_map<std::string, std::uint64_t> online_;            // "QQ 10001" → 连接编号
     std::unordered_map<std::string, RecentMessages> recent_;           // "QQ 10001" → 最近的消息回执
     std::unordered_map<std::string, ApiHandler> api_;                  // op → 处理函数
+    std::unordered_map<std::string, PublicHandler> publicApi_;         // 不需要登录的 op → 处理函数
+    // "QQ 1001" → 实时群聊室里的账号 → 它所在的连接（同一账号换一处登录后，旧连接断开时不能把新连接也移出去）
+    std::unordered_map<std::string, std::map<std::string, std::uint64_t>> rooms_;
     std::vector<Outgoing> outbox_;   // 本轮要交给 I/O 线程的发送和操作
     std::unordered_map<std::string, LoginThrottle> throttles_;   // "A 服务 账号" / "I ip" → 登录失败记录
     bool batchedStore_ = false;   // 消息存储批量提交（SQLite）
