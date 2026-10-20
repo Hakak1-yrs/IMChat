@@ -116,7 +116,9 @@ HttpRequest::ParseResult HttpRequest::parse(const char* data, std::size_t size, 
             if (a == std::string_view::npos || a == b || line.substr(b + 1, 5) != "HTTP/") return ParseResult::BAD;
             request.method = std::string(line.substr(0, a));
             const std::string_view target = line.substr(a + 1, b - a - 1);
-            request.path = std::string(target.substr(0, target.find('?')));
+            const std::size_t question = target.find('?');
+            request.path = std::string(target.substr(0, question));
+            if (question != std::string_view::npos) request.query = std::string(target.substr(question + 1));
             if (request.path.empty() || request.path[0] != '/') return ParseResult::BAD;
             continue;
         }

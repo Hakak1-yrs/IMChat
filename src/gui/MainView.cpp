@@ -4,6 +4,7 @@
 #include "Canvas.h"
 #include "ChatRoomPage.h"
 #include "CrossFriendPage.h"
+#include "Dialog.h"
 #include "FriendPage.h"
 #include "GroupPage.h"
 #include "GroupSquarePage.h"
@@ -11,6 +12,7 @@
 #include "GuiWindow.h"
 #include "LoginView.h"
 #include "MomentsPage.h"
+#include "NetPages.h"
 #include "NewFriendsPage.h"
 #include "P2PPage.h"
 #include "PlatformTools.h"
@@ -130,7 +132,10 @@ void MainView::showPage(std::shared_ptr<Page> page) {
     });
 }
 
-void MainView::showAccount() { showPage(std::make_shared<AccountPage>(window_)); }
+void MainView::showAccount() {
+    if (window_.session().isRemote()) showPage(std::make_shared<NetAccountPage>(window_));
+    else showPage(std::make_shared<AccountPage>(window_));
+}
 
 void MainView::showFriend(const std::string& peerId) { showPage(std::make_shared<FriendPage>(window_, peerId)); }
 
@@ -138,14 +143,32 @@ void MainView::showGroup(int groupNo) { showPage(std::make_shared<GroupPage>(win
 
 void MainView::showSquare() { showPage(std::make_shared<GroupSquarePage>(window_)); }
 
-void MainView::showCrossFriends() { showPage(std::make_shared<CrossFriendPage>(window_)); }
+void MainView::showCrossFriends() {
+    if (window_.session().isRemote()) showPage(std::make_shared<NetCrossFriendPage>(window_));
+    else showPage(std::make_shared<CrossFriendPage>(window_));
+}
 
 void MainView::showP2P() {
+    if (window_.session().isRemote()) {   // 联网：服务器帮忙找到对方，消息直连
+        if (!netP2p_) netP2p_ = std::make_shared<NetP2PPage>(window_);
+        showPage(netP2p_);
+        return;
+    }
     if (!p2p_) p2p_ = std::make_shared<P2PPage>(window_);
     showPage(p2p_);
 }
 
 void MainView::showRoom(int groupNo) {
+    if (window_.session().isRemote()) {   // 联网：群聊室由服务器主持
+        if (netRoom_ && netRoom_->groupNo() != groupNo && netRoom_->active()) {
+            toast(L"群 " + std::to_wstring(netRoom_->groupNo()) + L" 的群聊室正在进行，请先离开");
+            showPage(netRoom_);
+            return;
+        }
+        if (!netRoom_ || netRoom_->groupNo() != groupNo) netRoom_ = std::make_shared<NetRoomPage>(window_, groupNo);
+        showPage(netRoom_);
+        return;
+    }
     if (room_ && room_->groupNo() != groupNo && room_->active()) {   // 同一时间只进行一个群聊室
         toast(L"群 " + std::to_wstring(room_->groupNo()) + L" 的群聊室正在进行，请先结束");
         showPage(room_);
@@ -162,12 +185,65 @@ void MainView::showMoments() {
     momentNotices_ = 0;
 }
 
-bool MainView::roomActive(int groupNo) const { return room_ && room_->groupNo() == groupNo && room_->active(); }
+bool MainView::roomActive(int groupNo) const {
+    if (netRoom_ && netRoom_->groupNo() == groupNo && netRoom_->active()) return true;
+    return room_ && room_->groupNo() == groupNo && room_->active();
+}
 
 void MainView::endNetworkSessions() {
-    if (pages_.page() && (pages_.page() == p2p_ || pages_.page() == room_)) pages_.clear();
+    const auto page = pages_.page();
+    if (page && (page == p2p_ || page == room_ || page == netP2p_ || page == netRoom_)) pages_.clear();
     p2p_.reset();
     room_.reset();
+    netP2p_.reset();   // 析构时通知对方结束聊天、离开群聊室
+    netRoom_.reset();
+}
+
+void MainView::handleNetPushes() {
+    RemoteAccounts* accounts = window_.remoteAccounts();
+    if (!accounts) return;
+    for (RemoteSession* session : accounts->all()) {   // 邀请可能来自本人的任何一个服务
+        for (const nlohmann::json& event : session->takeRoomEvents()) {
+            if (netRoom_) netRoom_->onEvent(event);
+        }
+        for (const nlohmann::json& signal : session->takeSignals()) {
+            const nlohmann::json data = signal.value("data", nlohmann::json::object());
+            if (data.value("kind", "") != "invite") {
+                if (netP2p_) netP2p_->onSignal(*session, signal);
+                continue;
+            }
+            const std::string from = signal.value("from", "");
+            const std::string nickname = signal.value("nickname", from);
+            const ServiceType type = session->me().type;
+            auto reply = [this, type, from, data](const std::string& reason) {
+                RemoteAccounts* family = window_.remoteAccounts();
+                if (RemoteSession* s = family ? family->find(type) : nullptr) {
+                    s->call("p2p.signal", nlohmann::json{ { "to", from }, { "data", { { "kind", "reject" }, { "session", data.value("session", "") }, { "reason", reason } } } },
+                            nullptr);
+                }
+            };
+            if (netP2p_ && netP2p_->busy()) {   // 和单机版一样，同时只聊一个
+                reply("对方正在和别人点对点聊天");
+                continue;
+            }
+            auto dialog = std::make_unique<Dialog>(window_, GuiText::wide(nickname) + L" 邀请你点对点聊天");
+            dialog->message(Theme::shortName(type) + L" 好友 " + GuiText::wide(nickname + "(" + from + ")") +
+                            L"\n消息直接在两台设备之间传送，不经过服务器；聊天记录只保存在本机。")
+                .primary(L"接受", [this, type, from, nickname, data](Dialog&) {
+                    RemoteAccounts* family = window_.remoteAccounts();
+                    RemoteSession* s = family ? family->find(type) : nullptr;
+                    if (!s) return true;
+                    if (!netP2p_) netP2p_ = std::make_shared<NetP2PPage>(window_);
+                    netP2p_->accept(*s, from, nickname, data);
+                    showPage(netP2p_);
+                    return true;
+                })
+                .cancelText(L"拒绝")
+                .onCancel([reply] { reply("对方拒绝了邀请"); });
+            window_.openDialog(std::move(dialog));
+            FlashWindow(window_.hwnd(), TRUE);   // 窗口不在前台时提醒一下
+        }
+    }
 }
 
 void MainView::switchService(ServiceType type) {
@@ -243,6 +319,9 @@ void MainView::onTimer() {
     bool changed = false;
     if (p2p_ && p2p_->poll()) changed = true;
     if (room_ && room_->poll()) changed = true;
+    if (netP2p_ && netP2p_->poll()) changed = true;
+    if (netRoom_ && netRoom_->poll()) changed = true;
+    handleNetPushes();
     if (changed) window_.invalidate();
     // 联网模式每 0.1 秒处理一次服务端推来的数据；单机模式每 0.4 秒检查一次消息文件（其他窗口、控制台版发来的消息）
     if (!session.isRemote() && ++ticks_ % 4 != 0) return;
@@ -361,9 +440,11 @@ void MainView::onAction(int action, int index) {
         showNewFriends();
         break;
     case ACT_TOOL:
-        if (index == TOOL_OPEN_SERVICE) PlatformTools::openServiceDialog(window_);
+        if (index == TOOL_OPEN_SERVICE && window_.session().isRemote()) NetTools::openServiceDialog(window_);
+        else if (index == TOOL_OPEN_SERVICE) PlatformTools::openServiceDialog(window_);
         if (index == TOOL_P2P) showP2P();
-        if (index == TOOL_OVERVIEW) PlatformTools::showOverview(window_);
+        if (index == TOOL_OVERVIEW && window_.session().isRemote()) NetTools::showOverview(window_);
+        else if (index == TOOL_OVERVIEW) PlatformTools::showOverview(window_);
         if (index == TOOL_SAVE) PlatformTools::saveNow(window_);
         if (index == TOOL_MOMENTS) showMoments();
         break;
@@ -445,21 +526,19 @@ void MainView::paintRail(Canvas& c) {
         addHit(button, ACT_SERVICE, static_cast<int>(type));
         y += 58;
     }
-    if (local && services.size() < ServiceTypeHelper::all().size())   // 还有没开通的服务
+    if (services.size() < ServiceTypeHelper::all().size())   // 还有没开通的服务
         railButton(c, D2D1::RectF(cx - 22, y + 2, cx + 22, y + 46), kIconAdd, L"开通新服务", ACT_TOOL, TOOL_OPEN_SERVICE, false);
 
-    // 底部工具：朋友圈；点对点聊天、平台概况、立即保存（这三项直接操作本机，只在单机模式下有）；退出登录
-    const float momentsTop = local ? r.bottom - 274 : r.bottom - 118;
-    const D2D1_RECT_F moments = D2D1::RectF(cx - 22, momentsTop, cx + 22, momentsTop + 44);
+    // 底部工具：朋友圈、点对点聊天、平台概况；立即保存（直接操作本机的数据文件，只在单机模式下有）；退出登录
+    const float bottom = local ? r.bottom - 52 : r.bottom;   // 单机模式多一个“立即保存”
+    const D2D1_RECT_F moments = D2D1::RectF(cx - 22, bottom - 222, cx + 22, bottom - 178);
     railButton(c, moments, kIconCamera, GuiText::wide(me.momentsName), ACT_TOOL, TOOL_MOMENTS, false);
     if (momentNotices_ > 0) c.fillCircle(moments.right - 9, moments.top + 9, 4.5f, Theme::rgb(Theme::DANGER));   // 有新互动
-    if (local) {
-        const bool p2pActive = p2p_ && p2p_->active();
-        railButton(c, D2D1::RectF(cx - 22, r.bottom - 222, cx + 22, r.bottom - 178), kIconConnect, L"QQ点对点聊天（TCP）", ACT_TOOL,
-                   TOOL_P2P, p2pActive);
-        railButton(c, D2D1::RectF(cx - 22, r.bottom - 170, cx + 22, r.bottom - 126), kIconHome, L"平台概况", ACT_TOOL, TOOL_OVERVIEW, false);
-        railButton(c, D2D1::RectF(cx - 22, r.bottom - 118, cx + 22, r.bottom - 74), kIconSave, L"立即保存数据", ACT_TOOL, TOOL_SAVE, false);
-    }
+    const bool p2pActive = local ? p2p_ && p2p_->active() : netP2p_ && netP2p_->busy();
+    railButton(c, D2D1::RectF(cx - 22, bottom - 170, cx + 22, bottom - 126), kIconConnect,
+               local ? L"QQ点对点聊天（TCP）" : L"点对点聊天（服务器帮忙找到对方，消息直连）", ACT_TOOL, TOOL_P2P, p2pActive);
+    railButton(c, D2D1::RectF(cx - 22, bottom - 118, cx + 22, bottom - 74), kIconHome, L"平台概况", ACT_TOOL, TOOL_OVERVIEW, false);
+    if (local) railButton(c, D2D1::RectF(cx - 22, r.bottom - 118, cx + 22, r.bottom - 74), kIconSave, L"立即保存数据", ACT_TOOL, TOOL_SAVE, false);
     railButton(c, D2D1::RectF(cx - 22, r.bottom - 66, cx + 22, r.bottom - 22), kIconPower, L"退出登录", ACT_LOGOUT, 0, false);
 }
 
@@ -467,17 +546,14 @@ void MainView::paintList(Canvas& c) {
     const D2D1_RECT_F r = listArea();
     Session& session = window_.session();
     const AccountView me = session.me();
-    const bool local = !session.isRemote();
     const D2D1_COLOR_F accent = Theme::accent(me.type);
     c.fillRect(r, Theme::rgb(Theme::PANEL));
     c.line(r.right - 0.5f, r.top, r.right - 0.5f, r.bottom, Theme::rgb(Theme::BORDER));
 
-    // 个人信息（单机模式下点击进入个人中心）
+    // 个人信息（点击进入个人中心；联网模式下的个人中心由服务端完成各项操作）
     const D2D1_RECT_F profile = D2D1::RectF(r.left + 8, r.top + 14, r.right - 8, r.top + 74);
-    if (local) {
-        if (hovered(profile) || selectedKey() == "account") c.fillRound(profile, 12, Theme::rgb(Theme::HOVER));
-        addHit(profile, ACT_PROFILE);
-    }
+    if (hovered(profile) || selectedKey() == "account") c.fillRound(profile, 12, Theme::rgb(Theme::HOVER));
+    addHit(profile, ACT_PROFILE);
     const float ax = r.left + 42, ay = r.top + 44;
     c.fillCircle(ax, ay, 22, Theme::avatar(me.id));
     c.text(GuiText::initial(me.nickname), D2D1::RectF(ax - 22, ay - 22, ax + 22, ay + 22), 17, Theme::rgb(0xFFFFFF),
@@ -490,8 +566,8 @@ void MainView::paintList(Canvas& c) {
     std::wstring second = Theme::shortName(me.type) + L" " + GuiText::wide(me.id + " · " + me.location);
     if (RemoteSession* remote = window_.remoteSession()) second = Theme::shortName(me.type) + L" " + GuiText::wide(me.id) +
                                                                   (connected ? L" · 已连接 " : L" · 连接中 ") + GuiText::wide(remote->server());
-    c.text(second, D2D1::RectF(r.left + 76, r.top + 46, r.right - (local ? 40 : 16), r.top + 64), 12, Theme::rgb(Theme::TEXT3));
-    if (local) c.icon(kIconChevron, D2D1::RectF(r.right - 40, r.top + 30, r.right - 16, r.top + 58), 11, Theme::rgb(Theme::TEXT4));
+    c.text(second, D2D1::RectF(r.left + 76, r.top + 46, r.right - 40, r.top + 64), 12, Theme::rgb(Theme::TEXT3));
+    c.icon(kIconChevron, D2D1::RectF(r.right - 40, r.top + 30, r.right - 16, r.top + 58), 11, Theme::rgb(Theme::TEXT4));
 
     // 搜索框（输入框控件放在里面）
     const D2D1_RECT_F search = D2D1::RectF(r.left + 16, r.top + 88, r.right - 16, r.top + 124);
@@ -531,9 +607,8 @@ void MainView::paintList(Canvas& c) {
         const std::wstring labels[2] = { tab_ == TAB_CONTACTS ? L"＋ 添加好友" : L"＋ 新建群",
                                          tab_ == TAB_CONTACTS ? L"跨服务推荐" : L"全部群" };
         const int ids[2] = { tab_ == TAB_CONTACTS ? STRIP_ADD_FRIEND : STRIP_NEW_GROUP, tab_ == TAB_CONTACTS ? STRIP_CROSS : STRIP_SQUARE };
-        const int count = local || tab_ == TAB_GROUPS ? 2 : 1;   // 跨服务推荐要用到本人的多个服务账号，联网模式暂不提供
-        const float width = count == 2 ? (body.right - body.left - 32 - 8) / 2 : body.right - body.left - 32;
-        for (int i = 0; i < count; ++i) {
+        const float width = (body.right - body.left - 32 - 8) / 2;
+        for (int i = 0; i < 2; ++i) {
             const D2D1_RECT_F b = D2D1::RectF(body.left + 16 + (width + 8) * i, y + 2, body.left + 16 + (width + 8) * i + width, y + 34);
             D2D1_COLOR_F tint = accent;
             tint.a = hovered(b) ? 0.16f : 0.09f;

@@ -10,6 +10,8 @@
 
 class P2PPage;
 class ChatRoomPage;
+class NetP2PPage;
+class NetRoomPage;
 
 // 主界面：最左侧是导航栏（服务切换、开通新服务、点对点聊天、平台概况、立即保存、退出登录），
 // 中间是列表面板（个人信息、搜索、“消息 / 联系人 / 群聊”三个页签），
@@ -52,6 +54,7 @@ public:
     void afterServiceChanged();                 // 当前服务被关闭后：清空右侧并刷新
     void endNetworkSessions();                  // 结束点对点聊天和群聊室（关闭服务、注销前调用）
     bool roomActive(int groupNo) const;
+    void backToLogin(const std::wstring& notice);   // 退出登录、被挤下线、注销：回到登录页（联网模式同时断开服务器）
 
 private:
     enum Action { ACT_SERVICE = 1, ACT_LOGOUT, ACT_TAB, ACT_ITEM, ACT_FOCUS_SEARCH, ACT_PROFILE, ACT_TOOL, ACT_STRIP, ACT_NEW_FRIENDS };
@@ -77,12 +80,14 @@ private:
     void paintItem(Canvas& c, const Conversation& item, const D2D1_RECT_F& r);
     void paintStatus(Canvas& c);
     void paintToast(Canvas& c);
-    void backToLogin(const std::wstring& notice);   // 退出登录或被挤下线：回到登录页（联网模式同时断开服务器）
+    void handleNetPushes();   // 联网模式：把各服务收到的点对点邀请、群聊室事件交给对应的页面
 
     ChatPanel chat_;
     PagePanel pages_;
     std::shared_ptr<P2PPage> p2p_;            // 网络页面长期保存：切换到别的页面时连接不会断开
     std::shared_ptr<ChatRoomPage> room_;
+    std::shared_ptr<NetP2PPage> netP2p_;      // 联网模式的点对点聊天、群聊室（同样长期保存）
+    std::shared_ptr<NetRoomPage> netRoom_;
     HWND search_ = nullptr;
     Tab tab_ = TAB_CHATS;
     std::vector<Conversation> chats_, contacts_, groups_;

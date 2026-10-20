@@ -74,7 +74,7 @@ if(WIN32)
     file(GLOB NET_SOURCES CONFIGURE_DEPENDS src/net/*.cpp src/net/*.h)
     add_library(imchat_net STATIC ${NET_SOURCES})
     target_include_directories(imchat_net PUBLIC src/net)
-    target_link_libraries(imchat_net PUBLIC imchat_core ws2_32)
+    target_link_libraries(imchat_net PUBLIC imchat_core imchat_protocol ws2_32)   # protocol: WebSocket for P2P chat with browsers
 
     # ---- console client ----
     file(GLOB CONSOLE_SOURCES CONFIGURE_DEPENDS src/console/*.cpp src/console/*.h)
@@ -155,6 +155,9 @@ if(IMCHAT_BUILD_UNIT_TESTS)
     file(GLOB UNIT_TEST_SOURCES CONFIGURE_DEPENDS tests/unit/*.cpp tests/unit/*.h)
     add_executable(IMChatUnitTests ${UNIT_TEST_SOURCES})
     target_link_libraries(IMChatUnitTests PRIVATE imchat_server imchat_client GTest::gtest_main)
+    if(WIN32)
+        target_link_libraries(IMChatUnitTests PRIVATE imchat_net)   # DirectLink (P2P chat) lives in the Windows-only net library
+    endif()
     target_compile_definitions(IMChatUnitTests PRIVATE IMCHAT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     include(GoogleTest)
     gtest_discover_tests(IMChatUnitTests WORKING_DIRECTORY ${CMAKE_BINARY_DIR} DISCOVERY_MODE PRE_TEST)

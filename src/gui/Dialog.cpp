@@ -328,7 +328,7 @@ void Dialog::onAction(int action, int index) {
         submit();
         return;
     case ACT_CANCEL:
-        window_.closeDialog(this);
+        cancel();
         return;
     }
     window_.invalidate();
@@ -340,7 +340,16 @@ void Dialog::submit() {
 
 void Dialog::accept() { submit(); }
 
-void Dialog::cancel() { window_.closeDialog(this); }
+void Dialog::cancel() {
+    std::function<void()> callback = std::move(onCancel_);   // 关闭后本对象被销毁，先取出来
+    window_.closeDialog(this);
+    if (callback) callback();
+}
+
+Dialog& Dialog::onCancel(std::function<void()> callback) {
+    onCancel_ = std::move(callback);
+    return *this;
+}
 
 void Dialog::onWheel(float x, float y, float delta) {
     if (inside(pickBox_, x, y)) {
@@ -358,7 +367,7 @@ bool Dialog::onEditKey(HWND edit, int key) {
     while (index < fields_.size() && fields_[index].edit != edit) ++index;
     if (index == fields_.size()) return false;
     if (key == VK_ESCAPE) {
-        window_.closeDialog(this);
+        cancel();
     } else if (key == VK_TAB || (key == VK_RETURN && index + 1 < fields_.size())) {
         GuiWindow::focus(fields_[(index + 1) % fields_.size()].edit);   // 回车、Tab 跳到下一项
     } else if (key == VK_RETURN) {

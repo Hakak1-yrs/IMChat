@@ -288,10 +288,9 @@ void ChatPanel::onWheel(float x, float y, float delta) {
 float ChatPanel::contentRight() const { return drawer_ ? bounds_.right - kDrawerWidth : bounds_.right; }
 
 std::vector<int> ChatPanel::headerActions() const {
-    // 实时群聊室基于本机的 TCP 群聊服务，联网模式下不提供；群设置、好友资料页两种模式都能用
-    const bool local = !window_.session().isRemote();
+    // 实时群聊室：单机模式是本机的 TCP 群聊服务，联网模式由服务器主持；群设置、好友资料页两种模式都能用
     std::vector<int> actions;
-    if (conversation_.isGroup && local) actions.push_back(ACT_ROOM);
+    if (conversation_.isGroup) actions.push_back(ACT_ROOM);
     actions.push_back(ACT_SEARCH);
     actions.push_back(ACT_SETTINGS);
     actions.push_back(ACT_INFO);

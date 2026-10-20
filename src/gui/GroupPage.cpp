@@ -53,7 +53,7 @@ void GroupPage::build(PageModel& model) {
     model.subtitle = L"群号 " + std::to_wstring(groupNo_) + L" · " + GuiText::wide(g.modeName) + L" · " +
                      std::to_wstring(g.members.size()) + L" 人";
     if (member) {
-        if (!s.isRemote()) model.headerButtons.push_back(PageModel::button(L"实时群聊室", ACT_ROOM));   // 基于本机 TCP 的旧功能
+        model.headerButtons.push_back(PageModel::button(L"实时群聊室", ACT_ROOM));   // 单机：本机 TCP 群聊室；联网：服务器主持
         model.headerButtons.push_back(PageModel::button(L"进入群聊", ACT_CHAT, "", PageModel::PRIMARY));
     }
 

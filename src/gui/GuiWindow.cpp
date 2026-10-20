@@ -191,6 +191,8 @@ LocalSession& GuiWindow::localSession() { return local_; }
 
 RemoteSession* GuiWindow::remoteSession() { return remote_ ? &remote_->current() : nullptr; }
 
+RemoteAccounts* GuiWindow::remoteAccounts() { return remote_.get(); }
+
 void GuiWindow::startRemote(std::unique_ptr<RemoteAccounts> accounts) { remote_ = std::move(accounts); }
 
 void GuiWindow::endRemote() { remote_.reset(); }

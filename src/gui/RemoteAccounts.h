@@ -20,6 +20,11 @@ public:
     RemoteSession* find(ServiceType type);
     std::vector<ServiceType> services() const;   // 已经登录好的服务（按 QQ、微信、微博、微商的顺序）
     bool switchTo(ServiceType type);
+    std::vector<RemoteSession*> all();           // 全部服务的会话（点对点邀请、群聊室事件可能来自任何一个）
+    void addService(ServiceType type, const std::string& account);   // 刚开通的服务：凭令牌登录
+    // 当前服务被关闭了：切到另一个已登录的服务，并结束原来的会话。返回是否还有别的服务可用。
+    // 原会话会被销毁，不能在它的回调里直接调用（推迟到消息循环里）
+    bool removeCurrent();
 
     // 以下由 RemoteSession 调用（都在界面线程里）
     void onLogin(const nlohmann::json& response);   // 密码登录成功：凭令牌登录其他服务

@@ -31,6 +31,31 @@ bool RemoteAccounts::switchTo(ServiceType type) {
     return true;
 }
 
+std::vector<RemoteSession*> RemoteAccounts::all() {
+    std::vector<RemoteSession*> result;
+    for (auto& entry : sessions_) result.push_back(entry.second.get());
+    return result;
+}
+
+void RemoteAccounts::addService(ServiceType type, const std::string& account) {
+    if (sessions_.count(type)) return;
+    auto session = std::make_unique<RemoteSession>(host_, port_, this);
+    session->startWithToken(type, account, current().token());
+    sessions_[type] = std::move(session);
+}
+
+bool RemoteAccounts::removeCurrent() {
+    for (auto& [type, session] : sessions_) {
+        if (type != current_ && session->loggedIn()) {
+            const ServiceType closed = current_;
+            current_ = type;
+            sessions_.erase(closed);
+            return true;
+        }
+    }
+    return false;
+}
+
 void RemoteAccounts::onLogin(const nlohmann::json& response) {
     const std::string token = response.value("token", "");
     if (token.empty()) return;

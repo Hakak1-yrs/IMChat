@@ -27,6 +27,7 @@ public:
     Dialog& lines(const std::vector<std::wstring>& lines);                                              // 只读的多行内容
     Dialog& primary(const std::wstring& text, Submit onSubmit, bool danger = false);
     Dialog& cancelText(const std::wstring& text);
+    Dialog& onCancel(std::function<void()> callback);   // 点了取消（或按 Esc）时调用，比如拒绝邀请时通知对方
 
     // ---- 提交时读取 ----
     std::string text(size_t field) const;        // 输入框内容（UTF-8，已去掉首尾空白）
@@ -87,6 +88,7 @@ private:
     Submit onSubmit_;
     bool danger_ = false;
     std::wstring cancelText_ = L"取消";
+    std::function<void()> onCancel_;
     std::wstring error_;
     D2D1_RECT_F card_{};
     std::vector<D2D1_RECT_F> messageBoxes_;

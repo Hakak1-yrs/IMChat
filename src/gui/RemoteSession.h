@@ -34,6 +34,15 @@ public:
     LoginState loginState();          // 登录页定时查看；同时处理收件箱
     std::string loginError() const;
     std::string server() const;       // "host:port"
+    const std::string& token() const; // 登录令牌：开通新服务后凭它登录
+
+    // 通用请求（个人中心、跨服务好友、群聊室、点对点信令……），done 在界面线程里调用
+    using Result = std::function<void(bool ok, const nlohmann::json& data, const std::string& error)>;
+    void call(const std::string& op, nlohmann::json args, Result done);
+    // 推送来的点对点聊天信令（P2P_SIGNAL）、群聊室事件（ROOM_EVENT），取走后清空
+    std::vector<nlohmann::json> takeSignals();
+    std::vector<nlohmann::json> takeRoomEvents();
+    void setProfile(const std::string& nickname, const std::string& location);   // 个人中心改了昵称、所在地
 
     bool isRemote() const override;
     bool loggedIn() const override;
@@ -171,4 +180,7 @@ private:
     bool dirty_ = false;
     std::string notice_;
     std::string status_;
+    std::string token_;
+    std::vector<nlohmann::json> signals_;
+    std::vector<nlohmann::json> roomEvents_;
 };

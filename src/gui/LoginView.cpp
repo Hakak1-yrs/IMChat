@@ -4,6 +4,7 @@
 #include "GuiText.h"
 #include "GuiWindow.h"
 #include "MainView.h"
+#include "NetPages.h"
 #include "PlatformTools.h"
 #include "Theme.h"
 #include "Util.h"
@@ -177,11 +178,18 @@ void LoginView::paint(Canvas& c) {
     c.text(label, button, 16, Theme::rgb(0xFFFFFF), Align::CENTER, DWRITE_FONT_WEIGHT_SEMI_BOLD);
     if (!connecting_) addHit(button, ACT_LOGIN);
 
-    if (remote_) {   // 注册、概况、保存都是对本地数据的操作，联网模式下不显示
+    if (remote_) {   // 联网模式：注册在服务器上进行；概况、保存是对本地数据的操作，不显示
+        const std::wstring text = L"在服务器上注册新用户";
+        const float width = c.textWidth(text, 13.5f) + 16;
+        const float mid = (all.left + all.right) / 2;
+        const D2D1_RECT_F link = D2D1::RectF(mid - width / 2, card.bottom + 14, mid + width / 2, card.bottom + 42);
+        if (hovered(link)) c.fillRound(link, 8, Theme::rgb(0xFFFFFF, 0.8f));
+        c.text(text, link, 13.5f, accent, Align::CENTER);
+        addHit(link, ACT_LINK, LINK_REGISTER);
         c.text(L"联网模式：先启动 IMChatServer（默认端口 9000），不同电脑填服务端所在电脑的 IP",
-               D2D1::RectF(all.left, card.bottom + 20, all.right, card.bottom + 42), 12, Theme::rgb(Theme::TEXT3), Align::CENTER);
+               D2D1::RectF(all.left, card.bottom + 48, all.right, card.bottom + 70), 12, Theme::rgb(Theme::TEXT3), Align::CENTER);
         c.text(L"演示账号：QQ 10001 · 10002 · 10003，密码均为 123456",
-               D2D1::RectF(all.left, card.bottom + 46, all.right, card.bottom + 68), 12, Theme::rgb(Theme::TEXT3), Align::CENTER);
+               D2D1::RectF(all.left, card.bottom + 72, all.right, card.bottom + 94), 12, Theme::rgb(Theme::TEXT3), Align::CENTER);
         return;
     }
 
@@ -224,7 +232,8 @@ void LoginView::onAction(int action, int index) {
         break;
     case ACT_LOGIN: submit(); return;   // 登录成功后本视图已经隐藏，不再重绘
     case ACT_LINK:
-        if (index == LINK_REGISTER) PlatformTools::registerDialog(window_);
+        if (index == LINK_REGISTER && remote_) NetTools::registerDialog(window_, Util::trim(GuiText::utf8(GuiText::editText(server_))));
+        else if (index == LINK_REGISTER) PlatformTools::registerDialog(window_);
         if (index == LINK_OVERVIEW) PlatformTools::showOverview(window_);
         if (index == LINK_SAVE) PlatformTools::saveNow(window_);
         break;

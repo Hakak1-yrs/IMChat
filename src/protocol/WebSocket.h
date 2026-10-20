@@ -12,6 +12,7 @@
 struct HttpRequest {
     std::string method;
     std::string path;                             // 不含查询参数
+    std::string query;                            // “?” 后面的部分（如 "key=abc"），没有时为空
     std::map<std::string, std::string> headers;   // 名称都转成小写
 
     static constexpr std::size_t kMaxHeaderSize = 8192;

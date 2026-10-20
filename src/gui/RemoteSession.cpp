@@ -146,6 +146,10 @@ ChatClient::Callbacks RemoteSession::callbacks() {
                 if (it != messages_.end()) it->second.markRevoked(body.value("revokedBy", ""));
             } else if (type == MessageType::DATA_CHANGED) {   // 别人的操作影响了我（如通过了我的好友申请）
                 for (const std::string& topic : body.value("topics", std::vector<std::string>())) reload(topic);
+            } else if (type == MessageType::P2P_SIGNAL) {   // 点对点聊天的信令：交给点对点聊天页
+                signals_.push_back(body);
+            } else if (type == MessageType::ROOM_EVENT) {   // 群聊室里有人进出、发言：交给群聊室页
+                roomEvents_.push_back(body);
             }
         });
     };
@@ -176,6 +180,34 @@ std::string RemoteSession::loginError() const { return loginError_; }
 
 std::string RemoteSession::server() const { return host_ + ":" + std::to_string(port_); }
 
+const std::string& RemoteSession::token() const { return token_; }
+
+void RemoteSession::call(const std::string& op, json args, Result done) {
+    client_->call(op, std::move(args), [this, done](bool ok, const json& data, const std::string& error) {
+        post([done, ok, data, error] { if (done) done(ok, data, error); });
+    });
+}
+
+std::vector<json> RemoteSession::takeSignals() {
+    drain();
+    std::vector<json> result;
+    result.swap(signals_);
+    return result;
+}
+
+std::vector<json> RemoteSession::takeRoomEvents() {
+    drain();
+    std::vector<json> result;
+    result.swap(roomEvents_);
+    return result;
+}
+
+void RemoteSession::setProfile(const std::string& nickname, const std::string& location) {
+    if (!nickname.empty()) me_.nickname = nickname;
+    if (!location.empty()) me_.location = location;
+    dirty_ = true;
+}
+
 void RemoteSession::onLogin(bool ok, const json& response) {
     if (!ok) {
         if (loginState_ != LoginState::READY) {   // 首次登录失败
@@ -190,6 +222,7 @@ void RemoteSession::onLogin(bool ok, const json& response) {
     me_.nickname = response.value("nickname", me_.id);
     me_.location = response.value("location", "");
     me_.momentsName = response.value("momentsName", "动态");
+    token_ = response.value("token", token_);
     loggedIn_ = true;
     if (loginState_ != LoginState::READY) loginState_ = LoginState::LOADING;
     loadLists();   // 断线重连后也重新取一遍：断线期间好友、群可能有变化

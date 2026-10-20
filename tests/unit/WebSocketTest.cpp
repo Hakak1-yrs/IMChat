@@ -32,6 +32,7 @@ TEST(WebSocketCodecTest, ParsesUpgradeRequest) {
     EXPECT_EQ(consumed, text.size() - 5);   // 请求头后面的数据不算
     EXPECT_EQ(request.method, "GET");
     EXPECT_EQ(request.path, "/ws");
+    EXPECT_EQ(request.query, "x=1");
     EXPECT_EQ(request.header("host"), "192.168.1.5:9000");
     EXPECT_TRUE(request.isWebSocketUpgrade());
 

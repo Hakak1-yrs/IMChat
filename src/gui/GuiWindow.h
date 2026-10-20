@@ -51,6 +51,7 @@ public:
     Session& session();                          // 当前使用的会话：联网模式为 RemoteSession，否则为 LocalSession
     LocalSession& localSession();                // 单机模式的会话（只在单机模式下开放的功能页使用）
     RemoteSession* remoteSession();              // 联网模式下当前服务的会话，单机模式为空
+    RemoteAccounts* remoteAccounts();            // 联网模式下本人的全部服务，单机模式为空
     Platform& platform();
     MainView& mainView();
     LoginView& loginView();
