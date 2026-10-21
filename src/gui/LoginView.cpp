@@ -64,8 +64,10 @@ void LoginView::hide() {
 
 D2D1_RECT_F LoginView::card() const {
     const float height = kCardHeight + (remote_ ? kServerRowHeight : 0.0f);
+    // 卡片下方还有链接和提示文字（联网模式三行，单机模式两行）：连同它们一起居中，窗口矮时不至于被挤出窗口
+    const float footer = remote_ ? 96.0f : 76.0f;
     const float x = (bounds_.left + bounds_.right - kCardWidth) / 2;
-    const float y = (bounds_.top + bounds_.bottom - height) / 2 - 12;
+    const float y = (std::max)(bounds_.top + 8, (bounds_.top + bounds_.bottom - height - footer) / 2);
     return D2D1::RectF(x, y, x + kCardWidth, y + height);
 }
 

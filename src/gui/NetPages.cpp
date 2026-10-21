@@ -730,7 +730,9 @@ void NetTools::showOverview(GuiWindow& window) {
             lines.push_back(GuiText::wide(line));
         }
         std::wstring groups = L"群数量：";
-        for (const auto& item : data.value("groups", json::object()).items())
+        // 先存下来：value() 返回临时对象，直接对它的 items() 做 range-for，临时对象在循环开始前就销毁了
+        const json counts = data.value("groups", json::object());
+        for (const auto& item : counts.items())
             groups += serviceName(item.key()) + L" " + std::to_wstring(item.value().get<int>()) + L" 个  ";
         lines.push_back(groups);
         lines.push_back(L"（预置演示账号的密码均为 123456）");
