@@ -170,7 +170,8 @@ TEST_F(ServerFeaturesTest, OnlyServiceCannotBeClosedButAccountCanBeDeregistered)
     EXPECT_EQ(kicked->body["reason"], "账号已注销");
     // 张三的好友列表里没有他了
     ASSERT_TRUE(next(zhang, MessageType::DATA_CHANGED));
-    for (const json& f : call(zhang, "contacts.list")["data"]["friends"]) EXPECT_NE(f["id"], "10004");
+    const json contacts = call(zhang, "contacts.list");   // 先存下来：在临时对象的成员上直接 range-for，临时对象在循环开始前就销毁了
+    for (const json& f : contacts["data"]["friends"]) EXPECT_NE(f["id"], "10004");
     TestClient again(port_);
     EXPECT_EQ(again.login("QQ", "10004")["ok"], false);
 
